@@ -2,21 +2,33 @@ import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, HttpStatus }
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/swagger';
 import { SessionService } from '../session/session.service';
 
+import { IsArray, IsNotEmpty, IsString } from 'class-validator';
+
 // DTOs
 class CreateGroupDto {
+  @IsString()
+  @IsNotEmpty()
   name: string;
+
+  @IsArray()
+  @IsString({ each: true })
   participants: string[];
 }
 
 class ParticipantsDto {
+  @IsArray()
+  @IsString({ each: true })
   participants: string[];
 }
 
 class GroupSubjectDto {
+  @IsString()
+  @IsNotEmpty()
   subject: string;
 }
 
 class GroupDescriptionDto {
+  @IsString()
   description: string;
 }
 

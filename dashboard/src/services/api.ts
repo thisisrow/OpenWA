@@ -189,6 +189,15 @@ export const sessionApi = {
   getQR: (id: string) => request<{ qrCode: string; status: string }>(`/sessions/${id}/qr`),
   getStats: () => request<SessionStats>('/sessions/stats/overview'),
   getGroups: (id: string) => request<{ id: string; name: string }[]>(`/sessions/${id}/groups`),
+  createGroup: (id: string, name: string, participants: string[]) =>
+    request<{ id: string; name: string; participantsCount?: number }>(`/sessions/${id}/groups`, {
+      method: 'POST',
+      body: JSON.stringify({ name, participants }),
+    }),
+  leaveGroup: (id: string, groupId: string) =>
+    request<{ success: boolean; message: string }>(`/sessions/${id}/groups/${groupId}/leave`, {
+      method: 'POST',
+    }),
 };
 
 // =============================================================================

@@ -42,6 +42,7 @@ export interface WhatsAppWebJsConfig {
   puppeteer?: {
     headless?: boolean;
     args?: string[];
+    executablePath?: string;
   };
   // Phase 3: Proxy per session
   proxy?: {
@@ -96,6 +97,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
         puppeteer: {
           headless: this.config.puppeteer?.headless ?? true,
           args: puppeteerArgs,
+          executablePath: this.config.puppeteer?.executablePath,
         },
       });
 
@@ -510,10 +512,18 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     }
   }
 
+  private formatParticipantJid(p: string): string {
+    if (p.includes('@')) {
+      return p;
+    }
+    const clean = p.replace(/\D/g, '');
+    return `${clean}@c.us`;
+  }
+
   async createGroup(name: string, participants: string[]): Promise<Group> {
     this.ensureReady();
     // Ensure participant IDs are in correct format
-    const participantIds = participants.map(p => (p.includes('@') ? p : `${p}@c.us`));
+    const participantIds = participants.map(p => this.formatParticipantJid(p));
     const result = await this.client!.createGroup(name, participantIds);
 
     const groupId = String((result as unknown as GroupCreateResult).gid._serialized);
@@ -530,7 +540,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     if (!chat.isGroup) {
       throw new Error('Chat is not a group');
     }
-    const participantIds = participants.map(p => (p.includes('@') ? p : `${p}@c.us`));
+    const participantIds = participants.map(p => this.formatParticipantJid(p));
     await (chat as unknown as GroupChat).addParticipants(participantIds);
   }
 
@@ -540,7 +550,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     if (!chat.isGroup) {
       throw new Error('Chat is not a group');
     }
-    const participantIds = participants.map(p => (p.includes('@') ? p : `${p}@c.us`));
+    const participantIds = participants.map(p => this.formatParticipantJid(p));
     await (chat as unknown as GroupChat).removeParticipants(participantIds);
   }
 
@@ -550,7 +560,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     if (!chat.isGroup) {
       throw new Error('Chat is not a group');
     }
-    const participantIds = participants.map(p => (p.includes('@') ? p : `${p}@c.us`));
+    const participantIds = participants.map(p => this.formatParticipantJid(p));
     await (chat as unknown as GroupChat).promoteParticipants(participantIds);
   }
 
@@ -560,7 +570,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter implements IWhatsAppEngin
     if (!chat.isGroup) {
       throw new Error('Chat is not a group');
     }
-    const participantIds = participants.map(p => (p.includes('@') ? p : `${p}@c.us`));
+    const participantIds = participants.map(p => this.formatParticipantJid(p));
     await (chat as unknown as GroupChat).demoteParticipants(participantIds);
   }
 

@@ -44,6 +44,14 @@ export class EngineFactory implements OnModuleInit {
     const wwjsPlugin = new WhatsAppWebJsPlugin();
     this.pluginLoader.registerBuiltInPlugin(wwjsManifest, wwjsPlugin);
 
+    // Update config for built-in plugin to match environment/app config
+    this.pluginLoader.updatePluginConfig('whatsapp-web.js', {
+      sessionDataPath: this.configService.get<string>('engine.sessionDataPath'),
+      headless: this.configService.get<boolean>('engine.puppeteer.headless'),
+      puppeteerArgs: this.configService.get<string[]>('engine.puppeteer.args'),
+      executablePath: this.configService.get<string>('engine.puppeteer.executablePath'),
+    });
+
     // Auto-enable the configured engine
     try {
       await this.pluginLoader.enablePlugin(this.engineType);
@@ -85,7 +93,7 @@ export class EngineFactory implements OnModuleInit {
       typeof instance === 'object' &&
       instance !== null &&
       'type' in instance &&
-      (instance as { type: unknown }).type === PluginType.ENGINE &&
+      instance.type === PluginType.ENGINE &&
       'createEngine' in instance &&
       typeof (instance as { createEngine: unknown }).createEngine === 'function'
     );
@@ -99,6 +107,7 @@ export class EngineFactory implements OnModuleInit {
       puppeteer: {
         headless: this.configService.get<boolean>('engine.puppeteer.headless') ?? true,
         args: this.configService.get<string[]>('engine.puppeteer.args') ?? ['--no-sandbox', '--disable-setuid-sandbox'],
+        executablePath: this.configService.get<string>('engine.puppeteer.executablePath'),
       },
       proxy: options.proxyUrl
         ? {

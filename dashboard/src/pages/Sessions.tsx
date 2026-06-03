@@ -25,6 +25,14 @@ export function Sessions() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'details' | 'groups'>('details');
+  const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [showCreateGroupForm, setShowCreateGroupForm] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupParticipants, setNewGroupParticipants] = useState('');
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [leavingGroupId, setLeavingGroupId] = useState<string | null>(null);
 
   useWebSocket({
     onSessionStatus: useCallback(
@@ -179,6 +187,85 @@ export function Sessions() {
   };
 
   const formatStatus = (status: string) => t(`sessionStatus.${status}`, { defaultValue: status });
+
+  const fetchGroups = useCallback(async (sessionId: string) => {
+    try {
+      setLoadingGroups(true);
+      const data = await sessionApi.getGroups(sessionId);
+      setGroups(data);
+    } catch (err) {
+      console.error('Failed to fetch groups:', err);
+      toast.error(t('sessions.groups.fetchError', 'Failed to fetch groups'), err instanceof Error ? err.message : '');
+    } finally {
+      setLoadingGroups(false);
+    }
+  }, [toast, t]);
+
+  useEffect(() => {
+    if (selectedSession && activeTab === 'groups') {
+      fetchGroups(selectedSession.id);
+    }
+  }, [selectedSession, activeTab, fetchGroups]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      setActiveTab('details');
+      setGroups([]);
+      setShowCreateGroupForm(false);
+      setNewGroupName('');
+      setNewGroupParticipants('');
+    }
+  }, [selectedSession]);
+
+  const handleCreateGroup = async () => {
+    if (!selectedSession || !newGroupName.trim()) return;
+
+    const participantList = newGroupParticipants
+      .split(',')
+      .map(p => {
+        let clean = p.trim().replace(/[\s\-()]/g, '');
+        if (clean.startsWith('+')) {
+          clean = clean.substring(1);
+        }
+        return clean;
+      })
+      .filter(p => p.length > 0);
+
+    if (participantList.length === 0) {
+      toast.warning(t('sessions.groups.noParticipants', 'No participants'), t('sessions.groups.noParticipantsDesc', 'Please enter at least one participant phone number'));
+      return;
+    }
+
+    try {
+      setCreatingGroup(true);
+      await sessionApi.createGroup(selectedSession.id, newGroupName.trim(), participantList);
+      toast.success(t('sessions.groups.createSuccess', 'Group Created'), t('sessions.groups.createSuccessDesc', { name: newGroupName.trim() }));
+      setNewGroupName('');
+      setNewGroupParticipants('');
+      setShowCreateGroupForm(false);
+      fetchGroups(selectedSession.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t('sessions.groups.createError', 'Failed to create group');
+      toast.error(t('sessions.groups.createErrorTitle', 'Error creating group'), msg);
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+
+  const handleLeaveGroup = async (groupId: string) => {
+    if (!selectedSession) return;
+    try {
+      setLeavingGroupId(groupId);
+      await sessionApi.leaveGroup(selectedSession.id, groupId);
+      toast.success(t('sessions.groups.leaveSuccess', 'Left Group'), t('sessions.groups.leaveSuccessDesc', 'Successfully left the group'));
+      fetchGroups(selectedSession.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t('sessions.groups.leaveError', 'Failed to leave group');
+      toast.error(t('sessions.groups.leaveErrorTitle', 'Error leaving group'), msg);
+    } finally {
+      setLeavingGroupId(null);
+    }
+  };
 
   const filteredSessions = sessions.filter(s => {
     const matchesSearch =
@@ -351,42 +438,147 @@ export function Sessions() {
 
       {selectedSession && (
         <div className="modal-overlay" onClick={() => setSelectedSession(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal session-detail-modal" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>{t('sessions.details.title')}</h2>
+              <div className="modal-title">
+                <h2>{t('sessions.details.title')}</h2>
+                <span className="session-name">{selectedSession.name}</span>
+              </div>
               <button className="btn-icon" onClick={() => setSelectedSession(null)}>
                 <X size={20} />
               </button>
             </div>
-            <div className="modal-body">
-              <div className="detail-grid">
-                <div className="detail-item">
-                  <span className="detail-label">{t('sessions.details.name')}</span>
-                  <span className="detail-value">{selectedSession.name}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">{t('sessions.details.status')}</span>
-                  <span className={`status-badge ${selectedSession.status}`}>{formatStatus(selectedSession.status)}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">{t('sessions.details.sessionId')}</span>
-                  <span className="detail-value mono">{selectedSession.id}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">{t('sessions.details.phone')}</span>
-                  <span className="detail-value">{selectedSession.phone || t('sessions.details.phoneNone')}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">{t('sessions.details.created')}</span>
-                  <span className="detail-value">{new Date(selectedSession.createdAt).toLocaleString()}</span>
-                </div>
-                <div className="detail-item">
-                  <span className="detail-label">{t('sessions.details.lastActive')}</span>
-                  <span className="detail-value">
-                    {selectedSession.lastActive ? new Date(selectedSession.lastActive).toLocaleString() : t('common.never')}
-                  </span>
-                </div>
+            
+            {selectedSession.status === 'ready' && (
+              <div className="modal-tabs">
+                <button 
+                  className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('details')}
+                >
+                  {t('sessions.details.tabInfo', 'Info')}
+                </button>
+                <button 
+                  className={`tab-btn ${activeTab === 'groups' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('groups')}
+                >
+                  {t('sessions.details.tabGroups', 'Groups')}
+                </button>
               </div>
+            )}
+
+            <div className="modal-body">
+              {activeTab === 'details' || selectedSession.status !== 'ready' ? (
+                <div className="detail-grid">
+                  <div className="detail-item">
+                    <span className="detail-label">{t('sessions.details.name')}</span>
+                    <span className="detail-value">{selectedSession.name}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{t('sessions.details.status')}</span>
+                    <span className={`status-badge ${selectedSession.status}`}>{formatStatus(selectedSession.status)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{t('sessions.details.sessionId')}</span>
+                    <span className="detail-value mono">{selectedSession.id}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{t('sessions.details.phone')}</span>
+                    <span className="detail-value">{selectedSession.phone || t('sessions.details.phoneNone')}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{t('sessions.details.created')}</span>
+                    <span className="detail-value">{new Date(selectedSession.createdAt).toLocaleString()}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{t('sessions.details.lastActive')}</span>
+                    <span className="detail-value">
+                      {selectedSession.lastActive ? new Date(selectedSession.lastActive).toLocaleString() : t('common.never')}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="groups-tab-content">
+                  {showCreateGroupForm ? (
+                    <div className="create-group-form">
+                      <h3>{t('sessions.groups.createNew', 'Create New Group')}</h3>
+                      <div className="form-field">
+                        <label>{t('sessions.groups.fieldName', 'Group Name')}</label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g. My Whatsapp Group"
+                          value={newGroupName}
+                          onChange={e => setNewGroupName(e.target.value)}
+                        />
+                      </div>
+                      <div className="form-field">
+                        <label>{t('sessions.groups.fieldParticipants', 'Participants (Phone Numbers, comma-separated)')}</label>
+                        <textarea 
+                          rows={3}
+                          placeholder="e.g. 918010710484, 919326426019"
+                          value={newGroupParticipants}
+                          onChange={e => setNewGroupParticipants(e.target.value)}
+                        />
+                        <span className="field-hint">Include country prefix (e.g. 91 for India), no + or spaces.</span>
+                      </div>
+                      <div className="form-actions">
+                        <button 
+                          className="btn-secondary btn-sm" 
+                          onClick={() => setShowCreateGroupForm(false)}
+                          disabled={creatingGroup}
+                        >
+                          {t('common.cancel')}
+                        </button>
+                        <button 
+                          className="btn-primary btn-sm" 
+                          onClick={handleCreateGroup}
+                          disabled={creatingGroup || !newGroupName.trim()}
+                        >
+                          {creatingGroup ? <Loader2 className="animate-spin" size={14} /> : t('common.create')}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="groups-list-view">
+                      <div className="groups-list-header">
+                        <h3>{t('sessions.groups.activeGroups', 'Active Groups')}</h3>
+                        <button className="btn-primary btn-sm" onClick={() => setShowCreateGroupForm(true)}>
+                          <Plus size={14} />
+                          {t('sessions.groups.create', 'Create Group')}
+                        </button>
+                      </div>
+
+                      {loadingGroups ? (
+                        <div className="groups-loading">
+                          <Loader2 className="animate-spin" size={24} />
+                          <p>{t('sessions.groups.loading', 'Loading groups...')}</p>
+                        </div>
+                      ) : groups.length === 0 ? (
+                        <div className="groups-empty">
+                          <p>{t('sessions.groups.noneFound', 'No groups found for this session.')}</p>
+                        </div>
+                      ) : (
+                        <div className="groups-scroll-area">
+                          {groups.map(group => (
+                            <div key={group.id} className="group-list-item">
+                              <div className="group-info">
+                                <span className="group-name">{group.name}</span>
+                                <span className="group-id mono">{group.id}</span>
+                              </div>
+                              <button 
+                                className="btn-danger btn-xs" 
+                                onClick={() => handleLeaveGroup(group.id)}
+                                disabled={leavingGroupId === group.id}
+                              >
+                                {leavingGroupId === group.id ? <Loader2 className="animate-spin" size={12} /> : t('sessions.groups.leave', 'Leave')}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="modal-footer">
               <button className="btn-secondary" onClick={() => setSelectedSession(null)}>

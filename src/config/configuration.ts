@@ -51,6 +51,7 @@ export default () => ({
     puppeteer: {
       headless: process.env.PUPPETEER_HEADLESS !== 'false',
       args: (process.env.PUPPETEER_ARGS || '--no-sandbox,--disable-setuid-sandbox').split(','),
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     },
     sessionDataPath: process.env.SESSION_DATA_PATH || './data/sessions',
   },
