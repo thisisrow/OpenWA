@@ -205,7 +205,7 @@ export function Sessions() {
     if (selectedSession && activeTab === 'groups') {
       fetchGroups(selectedSession.id);
     }
-  }, [selectedSession, activeTab, fetchGroups]);
+  }, [selectedSession?.id, activeTab]);
 
   useEffect(() => {
     if (!selectedSession) {
@@ -448,16 +448,16 @@ export function Sessions() {
                 <X size={20} />
               </button>
             </div>
-            
+
             {selectedSession.status === 'ready' && (
               <div className="modal-tabs">
-                <button 
+                <button
                   className={`tab-btn ${activeTab === 'details' ? 'active' : ''}`}
                   onClick={() => setActiveTab('details')}
                 >
                   {t('sessions.details.tabInfo', 'Info')}
                 </button>
-                <button 
+                <button
                   className={`tab-btn ${activeTab === 'groups' ? 'active' : ''}`}
                   onClick={() => setActiveTab('groups')}
                 >
@@ -503,8 +503,8 @@ export function Sessions() {
                       <h3>{t('sessions.groups.createNew', 'Create New Group')}</h3>
                       <div className="form-field">
                         <label>{t('sessions.groups.fieldName', 'Group Name')}</label>
-                        <input 
-                          type="text" 
+                        <input
+                          type="text"
                           placeholder="e.g. My Whatsapp Group"
                           value={newGroupName}
                           onChange={e => setNewGroupName(e.target.value)}
@@ -512,7 +512,7 @@ export function Sessions() {
                       </div>
                       <div className="form-field">
                         <label>{t('sessions.groups.fieldParticipants', 'Participants (Phone Numbers, comma-separated)')}</label>
-                        <textarea 
+                        <textarea
                           rows={3}
                           placeholder="e.g. 918010710484, 919326426019"
                           value={newGroupParticipants}
@@ -521,15 +521,15 @@ export function Sessions() {
                         <span className="field-hint">Include country prefix (e.g. 91 for India), no + or spaces.</span>
                       </div>
                       <div className="form-actions">
-                        <button 
-                          className="btn-secondary btn-sm" 
+                        <button
+                          className="btn-secondary btn-sm"
                           onClick={() => setShowCreateGroupForm(false)}
                           disabled={creatingGroup}
                         >
                           {t('common.cancel')}
                         </button>
-                        <button 
-                          className="btn-primary btn-sm" 
+                        <button
+                          className="btn-primary btn-sm"
                           onClick={handleCreateGroup}
                           disabled={creatingGroup || !newGroupName.trim()}
                         >
@@ -564,8 +564,8 @@ export function Sessions() {
                                 <span className="group-name">{group.name}</span>
                                 <span className="group-id mono">{group.id}</span>
                               </div>
-                              <button 
-                                className="btn-danger btn-xs" 
+                              <button
+                                className="btn-danger btn-xs"
                                 onClick={() => handleLeaveGroup(group.id)}
                                 disabled={leavingGroupId === group.id}
                               >
@@ -670,7 +670,7 @@ export function Sessions() {
                   {t('sessions.actions.view')}
                 </button>
                 {canWrite &&
-                (session.status === 'created' || session.status === 'idle' || session.status === 'disconnected') ? (
+                  (session.status === 'created' || session.status === 'idle' || session.status === 'disconnected') ? (
                   <button className="btn-action" onClick={() => handleStart(session.id)}>
                     <Play size={16} />
                     {t('sessions.actions.start')}
