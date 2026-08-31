@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBulkRecipients } from './bulkRecipients.ts';
+import { chunkBulkRecipients, clampBulkCampaignBatchSize, parseBulkRecipients } from './bulkRecipients.ts';
 
 test('parses one recipient per line, trimming whitespace and dropping blanks', () => {
   const text = '  +62 812-3456-78  \n\n628987654321@c.us\n   \n1203630000@g.us';
@@ -27,4 +27,26 @@ test('drops lines with neither an @ nor any digits instead of sending "@c.us"', 
 test('returns an empty list for empty input', () => {
   assert.deepEqual(parseBulkRecipients(''), []);
   assert.deepEqual(parseBulkRecipients('  \n \n'), []);
+});
+
+test('clamps campaign batch size to the 10-30 UI range', () => {
+  assert.equal(clampBulkCampaignBatchSize(1), 10);
+  assert.equal(clampBulkCampaignBatchSize(10), 10);
+  assert.equal(clampBulkCampaignBatchSize(24.9), 24);
+  assert.equal(clampBulkCampaignBatchSize(30), 30);
+  assert.equal(clampBulkCampaignBatchSize(99), 30);
+  assert.equal(clampBulkCampaignBatchSize(Number.NaN), 10);
+});
+
+test('chunks recipients by the clamped campaign batch size', () => {
+  const recipients = Array.from({ length: 35 }, (_, index) => `${index + 1}@c.us`);
+
+  assert.deepEqual(
+    chunkBulkRecipients(recipients, 12).map(chunk => chunk.length),
+    [12, 12, 11],
+  );
+  assert.deepEqual(
+    chunkBulkRecipients(recipients, 50).map(chunk => chunk.length),
+    [30, 5],
+  );
 });

@@ -1,0 +1,411 @@
+.bulk-messaging-page {
+  width: 100%;
+  padding: 2rem;
+}
+
+.bulk-messaging-page.bulk-loading {
+  display: flex;
+  min-height: 400px;
+  align-items: center;
+  justify-content: center;
+}
+
+.bulk-messaging-page .page-header {
+  margin-bottom: 2rem;
+}
+
+.bulk-messaging-page .bulk-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  gap: 1.5rem;
+}
+
+.bulk-messaging-page .bulk-compose-panel,
+.bulk-messaging-page .bulk-progress-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-white);
+  box-shadow: var(--shadow-sm);
+}
+
+.bulk-messaging-page .bulk-compose-panel {
+  padding: 1.5rem;
+}
+
+.bulk-messaging-page .bulk-progress-panel {
+  align-self: start;
+  overflow: hidden;
+}
+
+.bulk-messaging-page .panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.bulk-messaging-page .panel-heading h2,
+.bulk-messaging-page .result-list h3 {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.bulk-messaging-page .form-grid,
+.bulk-messaging-page .template-variable-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.bulk-messaging-page label,
+.bulk-messaging-page .field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.bulk-messaging-page label > span,
+.bulk-messaging-page .field-block > span {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.bulk-messaging-page input,
+.bulk-messaging-page textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-light);
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+}
+
+.bulk-messaging-page input {
+  padding: 0.8125rem 0.875rem;
+}
+
+.bulk-messaging-page textarea {
+  min-height: 110px;
+  padding: 0.875rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.bulk-messaging-page input:focus,
+.bulk-messaging-page textarea:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: var(--bg-white);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.bulk-messaging-page .bulk-hint {
+  margin: -0.625rem 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.bulk-messaging-page .bulk-type-grid,
+.bulk-messaging-page .bulk-source-row {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.bulk-messaging-page .bulk-type-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.bulk-messaging-page .bulk-source-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.bulk-messaging-page .bulk-type-grid button,
+.bulk-messaging-page .bulk-source-row button {
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-light);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.bulk-messaging-page .bulk-type-grid button.active,
+.bulk-messaging-page .bulk-source-row button.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary-text);
+}
+
+.bulk-messaging-page .template-compose,
+.bulk-messaging-page .media-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.bulk-messaging-page .message-preview pre {
+  min-height: 140px;
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-light);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bulk-messaging-page .media-upload-row {
+  margin-bottom: 1rem;
+}
+
+.bulk-messaging-page .file-selected {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-light);
+}
+
+.bulk-messaging-page .file-selected span {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-messaging-page .icon-action {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-white);
+  color: var(--text-secondary);
+}
+
+.bulk-messaging-page .campaign-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.bulk-messaging-page .bulk-progress-panel .panel-heading,
+.bulk-messaging-page .metric-grid,
+.bulk-messaging-page .batch-details,
+.bulk-messaging-page .result-list {
+  padding: 1rem;
+}
+
+.bulk-messaging-page .bulk-progress-panel .panel-heading {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.bulk-messaging-page .campaign-badge {
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.12);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.bulk-messaging-page .campaign-badge.running,
+.bulk-messaging-page .campaign-badge.stopping {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+}
+
+.bulk-messaging-page .campaign-badge.completed {
+  background: rgba(37, 211, 102, 0.12);
+  color: var(--primary-text);
+}
+
+.bulk-messaging-page .campaign-badge.failed {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--error-text);
+}
+
+.bulk-messaging-page .progress-meter {
+  height: 8px;
+  margin: 1rem 1rem 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.bulk-messaging-page .progress-meter-fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.3s;
+}
+
+.bulk-messaging-page .progress-line {
+  padding: 0.5rem 1rem 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.bulk-messaging-page .metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.bulk-messaging-page .metric-grid div,
+.bulk-messaging-page .batch-details div {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-light);
+}
+
+.bulk-messaging-page .metric-grid div {
+  padding: 0.75rem;
+}
+
+.bulk-messaging-page .metric-grid span,
+.bulk-messaging-page .batch-details span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.bulk-messaging-page .metric-grid strong {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-primary);
+  font-size: 1.25rem;
+}
+
+.bulk-messaging-page .batch-details {
+  display: grid;
+  gap: 0.625rem;
+  border-top: 1px solid var(--border);
+}
+
+.bulk-messaging-page .batch-details div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+}
+
+.bulk-messaging-page .batch-details strong,
+.bulk-messaging-page .batch-details code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-messaging-page .campaign-error {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 1rem 1rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--error-text);
+  font-size: 0.875rem;
+}
+
+.bulk-messaging-page .result-list {
+  border-top: 1px solid var(--border);
+}
+
+.bulk-messaging-page .result-list h3 {
+  margin-bottom: 0.75rem;
+}
+
+.bulk-messaging-page .result-list p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.bulk-messaging-page .result-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.bulk-messaging-page .result-row:last-child {
+  border-bottom: 0;
+}
+
+.bulk-messaging-page .result-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-messaging-page .result-row strong {
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  text-transform: capitalize;
+}
+
+@media (max-width: 1100px) {
+  .bulk-messaging-page .bulk-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .bulk-messaging-page {
+    padding: 1rem;
+  }
+
+  .bulk-messaging-page .bulk-compose-panel {
+    padding: 1rem;
+  }
+
+  .bulk-messaging-page .form-grid,
+  .bulk-messaging-page .template-variable-grid,
+  .bulk-messaging-page .bulk-type-grid,
+  .bulk-messaging-page .bulk-source-row,
+  .bulk-messaging-page .metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bulk-messaging-page .campaign-actions {
+    flex-direction: column;
+  }
+
+  .bulk-messaging-page .campaign-actions button {
+    justify-content: center;
+  }
+
+  .bulk-messaging-page .batch-details div {
+    grid-template-columns: 1fr;
+  }
+}

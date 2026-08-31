@@ -63,7 +63,8 @@
     "messageTester": "Testeur de messages",
     "infrastructure": "Infrastructure",
     "plugins": "Plugins",
-    "logs": "Journaux"
+    "logs": "Journaux",
+    "bulkMessaging": "Bulk Messaging"
   },
   "chats": {
     "media": {
@@ -970,5 +971,82 @@
       "current": "Cette session"
     },
     "loading": "Recherche…"
+  },
+  "bulkMessaging": {
+    "title": "Bulk Messaging",
+    "subtitle": "Send campaign messages in controlled batches",
+    "composeTitle": "Campaign Setup",
+    "session": "Session",
+    "noReadySessions": "No ready sessions",
+    "batchSize": "Batch Size",
+    "recipients": "Recipients",
+    "recipientsPlaceholder": "+62812345678\n628987654321@c.us",
+    "recipientsHint": "Recipients: {{count}} · Batches: {{batches}}",
+    "messageType": "Message Type",
+    "types": {
+      "text": "Text",
+      "image": "Image",
+      "video": "Video",
+      "audio": "Audio",
+      "document": "Document"
+    },
+    "messageSource": "Message Source",
+    "customMessage": "Custom Message",
+    "savedTemplate": "Saved Template",
+    "template": "Template",
+    "noTemplates": "No templates saved",
+    "previewEmpty": "Select or write a template to preview it here.",
+    "messageContent": "Message Content",
+    "messagePlaceholder": "Enter your message here...",
+    "mediaUrl": "Media URL",
+    "browse": "Browse",
+    "caption": "Caption",
+    "captionPlaceholder": "Optional caption",
+    "filename": "Filename",
+    "startCampaign": "Start Campaign",
+    "stopCampaign": "Stop Campaign",
+    "stopping": "Stopping...",
+    "viewOnly": "View Only",
+    "progressTitle": "Campaign Progress",
+    "percentComplete": "{{percent}}% complete",
+    "activeBatch": "Active Batch",
+    "batchOf": "{{current}} of {{total}}",
+    "batchId": "Batch ID",
+    "startedAt": "Started",
+    "completedAt": "Completed",
+    "none": "None",
+    "recentResults": "Recent Results",
+    "noResults": "Results will appear as batches report progress.",
+    "status": {
+      "idle": "Idle",
+      "running": "Running",
+      "stopping": "Stopping",
+      "completed": "Completed",
+      "cancelled": "Cancelled",
+      "failed": "Failed"
+    },
+    "metrics": {
+      "total": "Total",
+      "sent": "Sent",
+      "failed": "Failed",
+      "pending": "Pending",
+      "cancelled": "Cancelled",
+      "batches": "Batches"
+    },
+    "resultStatus": {
+      "pending": "Pending",
+      "sent": "Sent",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "toasts": {
+      "completed": "Campaign completed",
+      "cancelled": "Campaign stopped",
+      "failed": "Campaign failed: {{message}}",
+      "cancelFailed": "Could not stop campaign: {{message}}",
+      "fileTooLarge": "File is too large (max 18 MB)",
+      "fileReadFailed": "File read failed"
+    },
+    "uploadFile": "Upload file"
   }
 }
