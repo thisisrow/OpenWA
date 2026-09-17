@@ -31,6 +31,7 @@
                 "session_disconnected",
                 "session_restricted",
                 "session_restriction_lifted",
+                "session_rebind_rejected",
                 "message_sent",
                 "message_failed",
                 "send_pacing_blocked",
@@ -393,6 +394,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "name",
+            "required": false,
+            "in": "query",
+            "description": "Return only the session with exactly this name (case-sensitive); no match returns an empty array. An empty value or a repeated key is rejected with 400.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -557,6 +567,88 @@
           }
         },
         "summary": "Update the tunable configuration for a session",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{sessionId}/proxy": {
+      "get": {
+        "operationId": "SessionController_getProxy",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Effective proxy configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionProxyResponseDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "summary": "Get the per-session egress proxy configuration (credentials masked)",
+        "tags": [
+          "sessions"
+        ]
+      },
+      "patch": {
+        "description": "Sets or clears the proxy URL. Credentials in `proxyUrl` are stored but never returned by GET. No restart is performed — changes apply on the next session start.",
+        "operationId": "SessionController_updateProxy",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "description": "Session ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSessionProxyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated proxy configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionProxyResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid proxyUrl"
+          },
+          "404": {
+            "description": "Session not found"
+          }
+        },
+        "summary": "Update the per-session egress proxy configuration",
         "tags": [
           "sessions"
         ]
@@ -2215,6 +2307,24 @@
             "schema": {
               "type": "number"
             }
+          },
+          {
+            "name": "after",
+            "required": false,
+            "in": "query",
+            "description": "Keyset cursor: the id of the last message of the previous page. Anchors the window to a row rather than a count, so a message arriving mid-walk cannot shift it. Takes precedence over offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "inlineMedia",
+            "required": false,
+            "in": "query",
+            "description": "Set false to omit inline media payloads, leaving each row's { omitted, sizeBytes } marker and the media endpoint. The inline-media budget is per response, so a paged walk pulls it afresh on every page; default true.",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -2227,6 +2337,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "`after` names no message in this session. The keyset comparison would otherwise return an empty page, which reads exactly like the end of the history, so a walk resumed from a stale or foreign cursor would stop silently instead of reporting the cursor."
           }
         },
         "summary": "Get message history for a session",
@@ -2407,6 +2520,9 @@
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
           },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
+          },
           "501": {
             "description": "Sending media to a channel (`<id>@newsletter`) is not supported by the whatsapp-web.js engine — the page method it needs was removed by a WhatsApp Web update. Text to a channel still works."
           }
@@ -2466,6 +2582,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
           },
           "501": {
             "description": "Sending media to a channel (`<id>@newsletter`) is not supported by the whatsapp-web.js engine — the page method it needs was removed by a WhatsApp Web update. Text to a channel still works."
@@ -2528,6 +2647,9 @@
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
           },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
+          },
           "501": {
             "description": "Sending media to a channel (`<id>@newsletter`) is not supported by the whatsapp-web.js engine — the page method it needs was removed by a WhatsApp Web update. Text to a channel still works."
           }
@@ -2588,6 +2710,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
           },
           "501": {
             "description": "Sending media to a channel (`<id>@newsletter`) is not supported by the whatsapp-web.js engine — the page method it needs was removed by a WhatsApp Web update. Text to a channel still works."
@@ -2765,6 +2890,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
           },
           "501": {
             "description": "Sending media to a channel (`<id>@newsletter`) is not supported by the whatsapp-web.js engine — the page method it needs was removed by a WhatsApp Web update. Text to a channel still works."
@@ -2982,6 +3110,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state."
           }
         },
         "summary": "Add or remove a reaction to a message",
@@ -3060,6 +3191,9 @@
           },
           "501": {
             "description": "The active engine cannot serve this operation. It is part of the engine contract, but the engine currently running has no implementation for it."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the session is ready again."
           }
         },
         "summary": "Fetch chat history live from WhatsApp",
@@ -3122,6 +3256,9 @@
           },
           "501": {
             "description": "The active engine cannot serve this operation. It is part of the engine contract, but the engine currently running has no implementation for it."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the session is ready again."
           }
         },
         "summary": "Get reactions for a specific message",
@@ -3284,6 +3421,9 @@
           },
           "501": {
             "description": "Not supported on the Baileys engine"
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state."
           }
         },
         "summary": "Cast a vote on a poll",
@@ -3338,6 +3478,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request. The pin may or may not have been applied; a retry is safe, but it restarts the pin duration from the moment it succeeds."
           }
         },
         "summary": "Pin a message in its chat",
@@ -3392,6 +3535,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state."
           }
         },
         "summary": "Remove a message’s pin",
@@ -3500,6 +3646,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request. The change may or may not have been applied; repeating the request is safe, since it converges on the same state."
           }
         },
         "summary": "Edit the text of a message sent by this account",
@@ -3545,6 +3694,9 @@
           },
           "400": {
             "description": "Session not active or invalid request"
+          },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
           }
         },
         "summary": "Send messages to multiple recipients (async batch processing)",
@@ -4316,6 +4468,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The WhatsApp page died while reading contacts, retry shortly"
           }
         },
         "summary": "Get all contacts for a session",
@@ -4450,6 +4605,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so the lookup could not reach an answer. Distinct from the `404` above, which asserts the contact does not exist: this one asserts nothing about the contact. Retry once the session is ready again."
           }
         },
         "summary": "Get a specific contact by ID",
@@ -5764,6 +5922,9 @@
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
           },
+          "413": {
+            "description": "The decoded base64 media exceeds the media byte cap (`MEDIA_DOWNLOAD_MAX_BYTES`, 50 MiB by default). A whole request is separately bounded by `BODY_SIZE_LIMIT` (25 mb by default), and base64 inflates by about a third, so a large send usually meets that coarser limit first: the body parser rejects the request before this check runs."
+          },
           "503": {
             "description": "WhatsApp did not answer within the request budget. The change may or may not have been applied — the gateway stopped waiting for a confirmation that never came."
           }
@@ -6175,9 +6336,6 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
-          },
-          "503": {
-            "description": "WhatsApp did not answer within the request budget. The link may or may not have been created — the gateway stopped waiting for a reply that never came."
           }
         },
         "summary": "Generate a shareable WhatsApp call link",
@@ -6275,6 +6433,9 @@
           },
           "501": {
             "description": "The active engine cannot serve this operation. It is part of the engine contract, but the engine currently running has no implementation for it."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the session is ready again."
           }
         },
         "summary": "Get all labels (WhatsApp Business only)",
@@ -6325,6 +6486,9 @@
           },
           "501": {
             "description": "The active engine cannot serve this operation. It is part of the engine contract, but the engine currently running has no implementation for it."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the session is ready again."
           }
         },
         "summary": "Get a specific label by ID",
@@ -6333,7 +6497,7 @@
         ]
       },
       "put": {
-        "description": "Baileys only. `PUT` rather than `POST` because the label id is chosen by the caller: WhatsApp carries one `label_edit` write keyed on that id, so whether this creates or updates depends purely on whether the id already exists, and there is no server-assigned id to return.\n\n**Choose an unused id to create.** Reusing one silently rewrites that label rather than failing, because the protocol has no create-only form. Fields left out are left alone.\n\nwhatsapp-web.js can read and assign labels but cannot edit one, and answers `501`.",
+        "description": "Baileys only. `PUT` rather than `POST` because the label id is chosen by the caller: WhatsApp carries one `label_edit` write keyed on that id, so whether this creates or updates depends purely on whether the id already exists, and there is no server-assigned id to return.\n\n**Choose an unused id to create.** Reusing one silently rewrites that label rather than failing, because the protocol has no create-only form. The write replaces the whole label, so send every field it should keep: an omitted name or colour is not preserved.\n\nwhatsapp-web.js can read and assign labels but cannot edit one, and answers `501`.",
         "operationId": "LabelController_upsertLabel",
         "parameters": [
           {
@@ -6479,7 +6643,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/LabelChatDto"
+                    "$ref": "#/components/schemas/ChatSummaryDto"
                   }
                 }
               }
@@ -6549,6 +6713,9 @@
           },
           "501": {
             "description": "The active engine cannot serve this operation. It is part of the engine contract, but the engine currently running has no implementation for it."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-read, so nothing could be read. Retry once the session is ready again."
           }
         },
         "summary": "Get labels for a specific chat",
@@ -7487,6 +7654,9 @@
           },
           "409": {
             "description": "The session is not connected — an engine exists for it but is not `ready`: disconnected, reconnecting, or still initializing, so the request never reached WhatsApp. Wait for `ready` and retry. A session that was never started answers `400` instead, and the session lifecycle routes answer `409` for a conflicting state rather than this. One window answers this while the session still reads `ready`: WhatsApp Web periodically reloads its own page and the engine re-injects into it — for those few seconds the answer is a `409` naming the reload; retry shortly."
+          },
+          "503": {
+            "description": "The whatsapp-web.js page connection died mid-request, so the revoke did not complete. Safe to retry: revoking an already-revoked status converges. The status POST routes deliberately do NOT answer this, because a replayed post would publish the status a second time."
           }
         },
         "summary": "Delete own status",
@@ -9428,7 +9598,7 @@
   "info": {
     "title": "OpenWA API",
     "description": "Open Source WhatsApp API Gateway - Free, Self-Hosted HTTP API\n\n**Gateway-wide responses.** Two statuses are returned by middleware before routing, so any operation can emit them:\n\n- `415 Unsupported Media Type` — the request body carries a `Content-Encoding` other than `identity`. The aggregate in-flight body cap counts wire bytes, so a compressed body would be admitted on its compressed size and then inflated past the memory it is meant to bound. Send the body uncompressed.\n- `503 Service Unavailable` with `Retry-After` — the gateway already has too much request body data in flight. The body is not read; retry after the given delay.",
-    "version": "0.23.3",
+    "version": "0.23.5",
     "contact": {
       "name": "OpenWA",
       "url": "https://github.com/rmyndharis/OpenWA",
@@ -10038,7 +10208,7 @@
           },
           "lastError": {
             "type": "string",
-            "description": "Human-readable reason carried while the status is FAILED (a terminal engine failure) or ACTION_REQUIRED (the engine is running but something needs a human). Cleared on any other status.",
+            "description": "Human-readable reason carried while the status is FAILED (a terminal engine failure), ACTION_REQUIRED (the engine is running but something needs a human), or INITIALIZING from the fifth consecutive reconnect attempt of a session whose engine retries a dropped connection on its own, until the session is ready or a QR arrives. A QR window that runs out unscanned is not an attempt. INITIALIZING also carries it while a reconnect waits to retry after the engine failed to relaunch. Held in memory by the process running the session. Cleared on any other status.",
             "example": "Failed to launch the browser process: spawn /usr/bin/chromium ENOENT",
             "nullable": true
           },
@@ -10117,6 +10287,57 @@
             "maximum": 300000,
             "example": 5000,
             "nullable": true
+          }
+        }
+      },
+      "SessionProxyResponseDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether a proxy URL is configured for this session",
+            "example": true
+          },
+          "proxyType": {
+            "type": "string",
+            "description": "Proxy protocol derived from the stored URL scheme; `null` when no proxy is set",
+            "enum": [
+              "http",
+              "https",
+              "socks4",
+              "socks5",
+              null
+            ],
+            "nullable": true,
+            "example": "http"
+          },
+          "proxyHost": {
+            "type": "string",
+            "description": "Proxy host:port parsed from the stored URL — credentials are never returned",
+            "nullable": true,
+            "example": "proxy.example.com:8080"
+          },
+          "hasCredentials": {
+            "type": "boolean",
+            "description": "Whether the stored proxy URL embeds username/password credentials",
+            "example": false
+          }
+        },
+        "required": [
+          "enabled",
+          "proxyType",
+          "proxyHost",
+          "hasCredentials"
+        ]
+      },
+      "UpdateSessionProxyDto": {
+        "type": "object",
+        "properties": {
+          "proxyUrl": {
+            "type": "string",
+            "description": "Per-session egress proxy URL (http/https/socks4/socks5; credentialed form allowed). Send `null` to clear the proxy. Must be a real, reachable proxy — an unreachable value blocks the WhatsApp WebSocket and session start times out (~30s).",
+            "nullable": true,
+            "example": "http://user:pass@proxy.example.com:8080"
           }
         }
       },
@@ -10246,6 +10467,26 @@
           "lastMessage": {
             "type": "string",
             "example": "hi"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Archived state, as set via POST /sessions/{sessionId}/chats/archive.",
+            "example": false
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Pinned state, as set via POST /sessions/{sessionId}/chats/pin.",
+            "example": false
+          },
+          "muted": {
+            "type": "boolean",
+            "description": "Whether the chat is muted right now, as set via POST /sessions/{sessionId}/chats/mute. The verdict rather than the expiry: whatsapp-web.js derives it itself from Chat.isMuted, and Baileys carries a muteEndTime that this gateway compares against now. muteExpiration carries the instant itself.",
+            "example": false
+          },
+          "muteExpiration": {
+            "type": "number",
+            "description": "Epoch MILLISECONDS at which the mute ends, present only when muted is true; 0 means muted indefinitely. Milliseconds is the same unit as POST /sessions/{sessionId}/chats/mute muteUntil, so a finite value can be written straight back. The 0 an indefinite mute reports is the exception: muteUntil requires a real future instant, so re-apply an indefinite mute with a far-future timestamp rather than 0.",
+            "example": 1786003600000
           }
         },
         "required": [
@@ -10254,7 +10495,10 @@
           "isGroup",
           "kind",
           "unreadCount",
-          "timestamp"
+          "timestamp",
+          "archived",
+          "pinned",
+          "muted"
         ]
       },
       "MarkChatReadDto": {
@@ -10680,12 +10924,14 @@
           },
           "secret": {
             "type": "string",
-            "description": "Secret key for HMAC signature verification",
-            "example": "your-secret-key"
+            "description": "Secret key for HMAC signature verification. Never returned by any webhook route; it is used to compute the `X-OpenWA-Signature: sha256=<hex>` header on every delivery.",
+            "minLength": 16,
+            "maxLength": 255,
+            "example": "your-webhook-signing-secret"
           },
           "headers": {
             "type": "object",
-            "description": "Custom headers to include in webhook requests",
+            "description": "Custom headers to include in webhook requests. Never returned by any webhook route. At delivery, `content-type` and `x-openwa-*` names are stripped so a custom header cannot shadow a system one.",
             "example": {
               "X-Custom-Header": "value"
             }
@@ -10872,11 +11118,15 @@
           },
           "secret": {
             "type": "string",
-            "description": "Secret key for HMAC signature"
+            "description": "Secret key for HMAC signature. At least 16 characters, or an empty string to clear it. Never returned by any webhook route.",
+            "maxLength": 255
           },
           "headers": {
             "type": "object",
-            "description": "Custom headers"
+            "description": "Custom headers. Replaces the stored map wholesale. Never returned by any webhook route.",
+            "example": {
+              "X-Custom-Header": "value"
+            }
           },
           "filters": {
             "description": "Optional smart pre-filter. When set, every condition must match (AND) for the webhook to fire. Omit or null to fire on every subscribed event.",
@@ -11846,6 +12096,49 @@
           "longitude"
         ]
       },
+      "ChatHistoryOrderDto": {
+        "type": "object",
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "description": "Id of the cart the customer placed from the business catalog.",
+            "example": "1000000000000001"
+          },
+          "token": {
+            "type": "string",
+            "description": "Opaque single-order credential that accompanies `orderId`. Pass through unchanged; do not log it."
+          }
+        },
+        "required": [
+          "orderId"
+        ]
+      },
+      "ChatHistoryProductDto": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "description": "Id of the shared catalog product.",
+            "example": "2000000000000002"
+          },
+          "title": {
+            "type": "string",
+            "example": "Sample product"
+          },
+          "description": {
+            "type": "string",
+            "example": "A sample product description."
+          },
+          "businessOwnerJid": {
+            "type": "string",
+            "description": "JID of the catalog's owner.",
+            "example": "628123456789@c.us"
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
       "ChatHistoryMessageDto": {
         "type": "object",
         "properties": {
@@ -11884,6 +12177,8 @@
               "poll",
               "call",
               "revoked",
+              "order",
+              "product",
               "masked",
               "unknown"
             ],
@@ -11982,6 +12277,22 @@
           },
           "location": {
             "$ref": "#/components/schemas/ChatHistoryLocationDto"
+          },
+          "order": {
+            "description": "Set for `order` messages.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatHistoryOrderDto"
+              }
+            ]
+          },
+          "product": {
+            "description": "Set for `product` messages.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChatHistoryProductDto"
+              }
+            ]
           }
         },
         "required": [
@@ -13635,6 +13946,12 @@
               "type": "object"
             }
           },
+          "chatStates": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
           "pluginInstances": {
             "type": "array",
             "items": {
@@ -13692,6 +14009,7 @@
           "templates",
           "baileysStoredMessages",
           "lidMappings",
+          "chatStates",
           "pluginInstances",
           "conversationMappings",
           "ingressEvents",
@@ -13732,6 +14050,10 @@
           "lidMappings": {
             "type": "number",
             "example": 64
+          },
+          "chatStates": {
+            "type": "number",
+            "example": 40
           },
           "pluginInstances": {
             "type": "number",
@@ -13774,6 +14096,7 @@
           "templates",
           "baileysStoredMessages",
           "lidMappings",
+          "chatStates",
           "pluginInstances",
           "conversationMappings",
           "ingressEvents",
@@ -13858,7 +14181,7 @@
         "properties": {
           "tables": {
             "type": "object",
-            "description": "Every one of the 14 migration tables is emptied before the restore runs, so a key omitted here is restored EMPTY rather than left untouched. Post the whole GET /api/infra/export-data payload, not a hand-built subset.",
+            "description": "Every one of the 16 migration tables is emptied before the restore runs, so a key omitted here is restored EMPTY rather than left untouched. Post the whole GET /api/infra/export-data payload, not a hand-built subset.",
             "properties": {
               "sessions": {
                 "type": "array"
@@ -13879,6 +14202,9 @@
                 "type": "array"
               },
               "lidMappings": {
+                "type": "array"
+              },
+              "chatStates": {
                 "type": "array"
               },
               "pluginInstances": {
@@ -14953,67 +15279,19 @@
           "hexColor"
         ]
       },
-      "LabelChatDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "Chat id in the engine's native format.",
-            "example": "628123456789@c.us"
-          },
-          "name": {
-            "type": "string",
-            "description": "Chat title — contact name or group subject.",
-            "example": "Ada Lovelace"
-          },
-          "isGroup": {
-            "type": "boolean",
-            "description": "Retained for back-compat; `kind` is the full discriminator.",
-            "example": false
-          },
-          "kind": {
-            "type": "string",
-            "description": "User-facing chat kind.",
-            "example": "individual"
-          },
-          "unreadCount": {
-            "type": "number",
-            "description": "Unread messages in this chat.",
-            "example": 0
-          },
-          "timestamp": {
-            "type": "number",
-            "description": "Unix SECONDS of the most recent activity.",
-            "example": 1786000000
-          },
-          "lastMessage": {
-            "type": "string",
-            "description": "Preview of the last message, when there is one.",
-            "example": "See you then"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "isGroup",
-          "kind",
-          "unreadCount",
-          "timestamp"
-        ]
-      },
       "UpsertLabelDto": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
-            "description": "Label name. Omit to leave the current name untouched.",
+            "description": "Label name. The write replaces the whole label, so an omitted name is not preserved.",
             "example": "VIP customer",
             "minLength": 1,
             "maxLength": 100
           },
           "color": {
             "type": "number",
-            "description": "WhatsApp's colour INDEX (0-19), not a hex value — the read path's `hexColor` cannot be translated back, because neither engine exposes the mapping. Omit to leave the colour alone.",
+            "description": "WhatsApp's colour INDEX (0-19), not a hex value — the read path's `hexColor` cannot be translated back, because neither engine exposes the mapping. An omitted colour is not preserved.",
             "example": 3,
             "minimum": 0,
             "maximum": 19

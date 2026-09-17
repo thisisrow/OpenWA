@@ -1,4 +1,4 @@
-import type { WASocket } from '@whiskeysockets/baileys';
+import type { GroupMetadata, WASocket } from '@whiskeysockets/baileys';
 import {
   Group,
   GroupInfo,
@@ -25,6 +25,8 @@ import { toParticipantWid } from '../identity/wa-id';
  * delegate never touches lifecycle state directly.
  */
 export interface BaileysGroupsHost {
+  /** This session's egress proxy URL (snapshotted at session start), or undefined when direct. */
+  sessionProxyUrl(): string | undefined;
   ensureReady(): void;
   /** Post-ensureReady socket handle — call host.ensureReady() first. */
   getSocket(): WASocket;
@@ -32,6 +34,8 @@ export interface BaileysGroupsHost {
   toNeutralJid(jid: string): string;
   toEngineJid(jid: string): string;
   normalizedSelfJid(): string;
+  /** Learn lid->pn pairs (write-through to the persistent table); no-ops pairs missing either side. */
+  addLidMappings(mappings: { lid?: string; pn?: string }[]): void;
 }
 
 /**
@@ -108,6 +112,30 @@ const MEMBERSHIP_REQUEST_METHODS: readonly GroupMembershipRequestMethod[] = [
   'linked_group_join',
 ];
 
+/**
+ * The lid->phone twins a group roster carries inline (`participant.phoneNumber`, `metadata.ownerPn`).
+ *
+ * `resolvePhone` (session store) reads only the lid map that 1:1 traffic, message keys, history and
+ * directed sends feed, so a member present solely in a group roster (never messaged, not a saved
+ * contact) resolves to `null` on `GET /contacts/{lid}/phone`, even though the roster just fetched
+ * carries their number (#1510). Harvesting the roster twins makes a fetched group's `@lid` members
+ * resolvable thereafter, reusing the same write-through the message-key path uses. Only `@lid`-addressed
+ * ids are harvested: a phone-addressed participant has no lid to key, and its `phoneNumber` would
+ * otherwise key a bogus phone->phone pair.
+ */
+export function collectGroupLidTwins(metadata: GroupMetadata): { lid: string; pn: string }[] {
+  const twins: { lid: string; pn: string }[] = [];
+  for (const p of metadata.participants ?? []) {
+    if (p.id?.endsWith('@lid') && p.phoneNumber) {
+      twins.push({ lid: p.id, pn: p.phoneNumber });
+    }
+  }
+  if (metadata.owner?.endsWith('@lid') && metadata.ownerPn) {
+    twins.push({ lid: metadata.owner, pn: metadata.ownerPn });
+  }
+  return twins;
+}
+
 export class BaileysGroups {
   constructor(
     private readonly host: BaileysGroupsHost,
@@ -151,6 +179,9 @@ export class BaileysGroups {
         this.queryBudgetMs,
         'WhatsApp did not answer the group metadata query in time',
       );
+      // Feed the roster's inline phone twins into the lid map so this group's @lid members become
+      // resolvable via GET /contacts/{lid}/phone even if they have never messaged this account (#1510).
+      this.host.addLidMappings(collectGroupLidTwins(metadata));
       return mapBaileysGroupInfo(metadata, jid => this.host.toNeutralJid(jid), this.host.normalizedSelfJid());
     } catch (err) {
       // Only a SERVER refusal may become null (→ service 404): the group does not exist or the
@@ -394,7 +425,7 @@ export class BaileysGroups {
   async setGroupPicture(groupId: string, media: MediaInput): Promise<void> {
     this.host.ensureReady();
     // Same socket call as the own-account picture, addressed at the group JID.
-    const { data } = await resolveMediaBuffer(media);
+    const { data } = await resolveMediaBuffer(media, this.host.sessionProxyUrl());
     await mapServerRefusal('Setting the group picture', () =>
       this.confirmed(this.sock().updateProfilePicture(groupId, data), 'the group picture change'),
     );

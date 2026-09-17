@@ -5,6 +5,7 @@ import type { Session } from './entities/session.entity';
 import type { SessionService } from './session.service';
 import type { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/entities/audit-log.entity';
+import type { ApiKey } from '../auth/entities/api-key.entity';
 import { BadGatewayException, BadRequestException, ConflictException } from '@nestjs/common';
 
 // POST /sessions declared a SessionResponseDto in its Swagger metadata but returned the raw
@@ -51,7 +52,6 @@ describe('SessionController — create() response contract', () => {
 
     expect(result).not.toHaveProperty('config');
     expect(result).not.toHaveProperty('proxyUrl');
-    expect(result).not.toHaveProperty('proxyType');
     expect(result).not.toHaveProperty('lastActiveAt');
   });
 
@@ -304,6 +304,43 @@ describe('SessionController — muteChat', () => {
   });
 });
 
+describe('SessionController findAll name filter', () => {
+  const apiKey = { allowedSessions: ['sess-uuid-1'] } as unknown as ApiKey;
+  let sessionService: { findAll: jest.Mock; isActive: jest.Mock };
+  let controller: SessionController;
+
+  beforeEach(() => {
+    sessionService = { findAll: jest.fn().mockResolvedValue([]), isActive: jest.fn().mockReturnValue(false) };
+    controller = new SessionControllerClass(
+      sessionService as unknown as SessionService,
+      { logInfo: jest.fn() } as unknown as AuditService,
+    );
+  });
+
+  it('forwards the name alongside the key allowlist and the window', async () => {
+    await expect(controller.findAll(apiKey, '10', '5', 'my-bot')).resolves.toEqual([]);
+
+    expect(sessionService.findAll).toHaveBeenCalledWith(['sess-uuid-1'], { limit: 10, offset: 5, name: 'my-bot' });
+  });
+
+  it('leaves the query unfiltered when name is absent', async () => {
+    await controller.findAll(apiKey);
+
+    expect(sessionService.findAll).toHaveBeenCalledWith(['sess-uuid-1'], {
+      limit: undefined,
+      offset: undefined,
+      name: undefined,
+    });
+  });
+
+  // A repeated key arrives as an array and an empty value as ''. Dropping either would return every
+  // session to a caller that asked for one, so both are refused before the service is reached.
+  it.each([[['a', 'b']], ['']])('rejects name=%p with 400', async name => {
+    await expect(controller.findAll(apiKey, undefined, undefined, name)).rejects.toBeInstanceOf(BadRequestException);
+    expect(sessionService.findAll).not.toHaveBeenCalled();
+  });
+});
+
 // The pin route forwards a boolean the engine can refuse. The value worth pinning is that the
 // engine's `false` reaches the caller: WhatsApp caps pinned chats at three, and a controller that
 // hard-coded `{ success: true }` would report a refused pin as done.
@@ -340,5 +377,55 @@ describe('SessionController — pinChat', () => {
     await controller.pinChat('sess-uuid-1', { chatId: '628123@c.us', pin: false });
 
     expect(sessionService.pinChat).toHaveBeenCalledWith('sess-uuid-1', '628123@c.us', false);
+  });
+});
+
+describe('SessionController — proxy() response contract', () => {
+  const proxyProjection = {
+    enabled: true,
+    proxyType: 'http' as const,
+    proxyHost: 'proxy.internal:8080',
+    hasCredentials: true,
+  };
+
+  let sessionService: { getProxy: jest.Mock; updateProxy: jest.Mock };
+  let auditService: { logInfo: jest.Mock };
+  let controller: SessionController;
+
+  beforeEach(() => {
+    sessionService = {
+      getProxy: jest.fn().mockResolvedValue(proxyProjection),
+      updateProxy: jest.fn().mockResolvedValue(proxyProjection),
+    };
+    auditService = { logInfo: jest.fn().mockResolvedValue(undefined) };
+    controller = new SessionControllerClass(
+      sessionService as unknown as SessionService,
+      auditService as unknown as AuditService,
+    );
+  });
+
+  it('getProxy returns the masked projection without proxyUrl', async () => {
+    const result = await controller.getProxy('sess-uuid-1');
+
+    expect(result).toEqual(proxyProjection);
+    expect(result).not.toHaveProperty('proxyUrl');
+  });
+
+  it('updateProxy audits the masked state, not the request body', async () => {
+    await controller.updateProxy('sess-uuid-1', {
+      proxyUrl: 'http://user:secret@proxy.internal:8080',
+    });
+
+    expect(auditService.logInfo).toHaveBeenCalledWith(
+      AuditAction.SESSION_CONFIG_UPDATED,
+      expect.objectContaining({
+        sessionId: 'sess-uuid-1',
+        metadata: {
+          proxyEnabled: true,
+          proxyType: 'http',
+          proxyHost: 'proxy.internal:8080',
+        },
+      }),
+    );
   });
 });

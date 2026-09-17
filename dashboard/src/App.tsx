@@ -116,7 +116,7 @@ function AppContent() {
               <Route path="webhooks" element={<Webhooks />} />
               <Route path="templates" element={<Templates />} />
               {role === 'admin' && <Route path="api-keys" element={<ApiKeys />} />}
-              <Route path="logs" element={<Logs />} />
+              {role === 'admin' && <Route path="logs" element={<Logs />} />}
               <Route path="message-tester" element={<MessageTester />} />
               <Route path="bulk-messaging" element={<BulkMessaging />} />
               {role === 'admin' && <Route path="infrastructure" element={<Infrastructure />} />}

@@ -7,25 +7,261 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- `PUPPETEER_PROTOCOL_TIMEOUT_MS` raises the per-browser-command budget on the whatsapp-web.js
-  engine, for large accounts whose reads fail with `Runtime.callFunctionOn timed out`. Unset keeps
-  Puppeteer's own budget, so nothing changes for a deployment that does not set it. The gateway
-  refuses to boot on `0` or on a value above 2147483647; see docs/12 for when to reach for it.
-
 ### Changed
 
-- A whatsapp-web.js protocol timeout is no longer eligible to be classified as a dead page.
-  Behaviour is unchanged on the current Puppeteer; the guard keeps a future bump from reporting a
-  slow command as a transport death.
+- The PostgreSQL data connection is pinned to UTC: parameters bind as UTC, naive timestamps read back as UTC, every pooled connection sets its session `TimeZone`, and boot fails when the effective zone is not UTC year round.
+- Credentials on a `socks4://` session proxy are reported at session start as unauthenticatable: SOCKS4 sends the user name as the connect request's user id and drops the password.
 
 ### Fixed
 
-- Inbound media whose download fails now keeps the `media` envelope with `omitted: true` and the declared
-  size, on both engines, instead of dropping the field and looking like a message that never had media.
-- Webhook filters and automation rules gated on `hasMedia` now match those messages.
-- Baileys logs a failed inbound media download at `warn` instead of `debug`, so it is visible by default.
+- Restoring a data archive into PostgreSQL from a gateway that does not run in UTC no longer shifts every timestamp by the host offset, and no longer shifts it again on each further restore ([#1624](https://github.com/rmyndharis/OpenWA/issues/1624)).
+- Retention sweeps on PostgreSQL delete the rows their window names instead of taking up to the host's UTC offset of younger rows with them, and the `today` message counts cover the host's local day.
+- Session leases on PostgreSQL compare as instants across nodes in different time zones and across a daylight-saving change.
+- Live WebSocket sockets are re-validated against the API-key table once a minute, so a key deleted, revoked, expired or narrowed on another node or by a direct database write drops its sockets there too, and a socket that connected while its key was being revoked no longer keeps that authorization for the life of the connection ([#1625](https://github.com/rmyndharis/OpenWA/issues/1625)).
+- A WebSocket subscribe whose socket is evicted while it is in flight no longer registers its rooms after the disconnect.
+
+### Upgrade notes (behavior changes)
+
+- PostgreSQL deployments: the data connection issues `SET TIME ZONE 'UTC'` per connection and verifies the result at boot. A deployment where that cannot hold (a pooler that drops session state) now fails to start, naming the effective zone; set the default instead with `ALTER DATABASE "<database>" SET TimeZone='UTC'`. SQLite deployments, and any gateway already running in UTC, are unaffected and no data moves.
+- PostgreSQL deployments whose **gateway** ran outside UTC before this release: the twelve columns the app writes itself hold that host's local wall time and now read as UTC, so they appear shifted by the offset. They are `sessions.connectedAt`, `sessions.lastActiveAt`, `sessions.claimedAt`, `sessions.leaseExpiresAt`, `webhooks.lastTriggeredAt`, `webhook_outbox_events.lastAttemptAt`, `ingress_events.lastDispatchAt`, `message_batches.started_at`, `message_batches.completed_at`, `lid_mappings.updatedAt`, `chat_states.updatedAt` and `baileys_stored_messages.createdAt`. The last three carry a `DEFAULT now()` that never fires, because their only writer passes the value. With the gateway stopped, convert each with the host's old zone, which resolves daylight saving per row: `UPDATE sessions SET "connectedAt" = ("connectedAt" AT TIME ZONE 'Asia/Jakarta') AT TIME ZONE 'UTC' WHERE "connectedAt" IS NOT NULL;`. `claimedAt` and `leaseExpiresAt` are cluster runtime state: clear them, do not convert them, with every node stopped and before the first start on this release, or the lease reads shifted by the old offset and the session is unusable until it lapses. East of UTC it reads hours into the future, so every node treats the session as held elsewhere and `POST /sessions/{id}/start` answers `409`; west of UTC it reads already lapsed, so a peer can adopt a session that is still running. `UPDATE sessions SET "nodeId" = NULL, "claimedAt" = NULL, "leaseExpiresAt" = NULL, "nodeUrl" = NULL;`. Leaving `lid_mappings.updatedAt` and `chat_states.updatedAt` unconverted also mis-ranks the boot preload of both caches, which orders by that column under a cap.
+- The remaining eighteen `createdAt`/`updatedAt` columns are written by PostgreSQL itself (`DEFAULT now()`) in the **server's** zone, not the gateway's. On a UTC server, which is the image default and what the bundled Compose file starts, they are already correct and must not be converted; convert them only if the server itself ran outside UTC, with the server's old zone.
+- A table that has had an archive from a **SQLite** gateway restored into it holds those rows in correct UTC while the app wrote its own in local time. The two are indistinguishable within the column, so a blanket `UPDATE` would move the rows that are already right; correct such a column row by row against a known archive, or leave it as it is.
+- An archive a **PostgreSQL** gateway outside UTC exported before this release is shifted the other way, and restoring it moved the whole table, `DEFAULT now()` columns included: the export read every value back through the local-time parser and the import bound the resulting ISO text into a column that drops the zone, so each restore took the table one offset backward. No row in such a table is correct, and the conversion above would move those rows a further offset the wrong way. Where the table holds nothing but restored rows, apply the inverse once per restore taken: `UPDATE sessions SET "createdAt" = ("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Jakarta';`. Where it also holds rows written after the restore, no blanket conversion is safe.
+- Re-export after upgrading for an archive whose stamps are the instants they claim; restoring a pre-release archive carries its shift in as it is.
+- A WebSocket client can now be disconnected with an `UNAUTHORIZED` frame up to a minute after its key changed, where before only the node that processed the change disconnected it; reconnect and resubscribe on that frame. A rename, and the key's usage counters, evict nobody.
+- A caller-supplied URL leaves through the session proxy from this release. Set `SESSION_PROXY_URL_FETCH=false` when a session proxy is a WhatsApp-only route that cannot reach arbitrary media hosts.
+
+### Security
+
+- Baileys sessions with a SOCKS4 proxy fetch through it instead of connecting direct: inbound media, the WhatsApp Web version lookup, the initial-sync payloads and a product card's image URL, which 0.23.5 routed through HTTP, HTTPS and SOCKS5 proxies only ([#1626](https://github.com/rmyndharis/OpenWA/issues/1626)).
+- A media URL passed to a send route or to `POST /api/sessions/{sessionId}/media/convert`, and the link preview of a text send, are fetched through the named session's egress proxy on both engines, instead of leaving from the gateway's own address ([#1626](https://github.com/rmyndharis/OpenWA/issues/1626)).
+
+## [0.23.5] - 2026-09-15
+
+### Security
+
+- The group invite-code read, over REST or the MCP `GroupGetInviteCode` tool, requires the OPERATOR role; the code is a transferable join capability, so a VIEWER key can no longer extract it ([GHSA-45fh-xj7x-vj2x](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-45fh-xj7x-vj2x)). Thanks Matija Petronijević for the report.
+- The amd64 image ships Chrome for Testing 153.0.8010.36 instead of 146.0.7680.31, picking up the browser security fixes released since (the arm64 image uses the Debian chromium package).
+- The `session.qr` WebSocket event reaches only OPERATOR and ADMIN keys, matching `GET /api/sessions/{sessionId}/qr`; a VIEWER key subscribed by name or through a wildcard no longer receives the pairing QR ([GHSA-m427-j4h4-9qwj](https://github.com/rmyndharis/OpenWA/security/advisories/GHSA-m427-j4h4-9qwj)).
+- An integration ingress route verified with `shared-secret` no longer stores the instance secret from its declared header; the value is redacted in the persisted event, the queued job, the dead-letter row and the `ingress:error` hook payload.
+- Baileys sessions with an HTTP, HTTPS or SOCKS5 proxy fetch through the proxy instead of connecting direct: inbound media, the WhatsApp Web version lookup, the history-sync and app-state payloads of the initial sync, and a product card's image URL. With a SOCKS4 proxy, which the HTTP client cannot use, inbound media is skipped and arrives as the omitted marker, the version lookup falls back to the bundled version, and the initial-sync payloads and product image are still fetched directly.
+
+### Added
+
+- Inbound commerce messages arrive typed `order` and `product` instead of a bodyless `unknown`, on both engines, and are accepted by webhook and automation-rule message-type filters ([#1547](https://github.com/rmyndharis/OpenWA/pull/1547)). Thanks @m7fz7.
+- The JavaScript, Python, Go and Java SDKs type the `order` and `product` message types, and the Python `ChatHistoryMessage` carries their blocks with required fields and enums matching the contract.
+- `GET /api/sessions` accepts a `name` query parameter that returns only the session with that exact name, also on the MCP `SessionFindAll` tool and the JavaScript, Python, Go, Java and PHP SDKs ([#1594](https://github.com/rmyndharis/OpenWA/issues/1594)). Thanks @rivenash for the request.
+
+### Changed
+
+- The Italian (`it`) dashboard translates the session proxy Save button, the webhook chat-kind filter label and the warning shown when a backup export leaves out media ([#1583](https://github.com/rmyndharis/OpenWA/pull/1583)). Thanks @albanobattistella.
+- `webhooks.deliveryFailures` returns a typed `WebhookDeliveryFailure` list in the JavaScript, Python, Go and Java SDKs; Go and Java callers that handled the old untyped value must update.
+- From-source minimum Node.js rises from 22.13 to **22.19**, the floor of the bundled `undici`.
+
+### Fixed
+
+- Engine auth directories are named after the session id instead of the session name, so two sessions whose names differ only in letter case no longer share one WhatsApp login, or wipe each other's, on a case-insensitive filesystem such as macOS APFS, Windows, or a Docker Desktop bind mount of either ([#1597](https://github.com/rmyndharis/OpenWA/issues/1597)). Existing directories are renamed at the first boot after the upgrade.
+- The Baileys live path drops a message made only of sender-key distributions or message-history notices instead of delivering it as a bodyless `unknown` `message.received`; other messages it cannot type still arrive as `unknown` ([#1568](https://github.com/rmyndharis/OpenWA/issues/1568)). Thanks @berodcdev for the report.
+- A Baileys reconnect loop is observable through `lastError` on the session, a `session.reconnect_loop` webhook every fifth attempt and reconnect metrics; a QR left unscanned is not reported as one ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
+- A Baileys connection attempt refused at the WebSocket upgrade is closed and retried instead of leaving the session at `initializing` ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
+- The dashboard session card keeps the phone number, session id and last-active time while a linked session reconnects, instead of the pairing placeholder ([#1546](https://github.com/rmyndharis/OpenWA/issues/1546)). Thanks @OdaiAhmed99 for the report.
+- The Sessions page reports a dead live-event feed. When the feed recovers from a gap, the Sessions page re-reads its list and the Chats page refetches the open thread and contact statuses; a feed that never connected counts as a gap only once it has failed and shown the reconnect banner.
+- A Baileys media download aborted at `MEDIA_DOWNLOAD_MAX_BYTES` reports the bytes received as `sizeBytes`, and a timed-out one its declared size, instead of the cap.
+- The webhook docs state that at the default limits media above about 768 KiB reaches webhooks as the omitted marker, and how to raise both limits ([#1569](https://github.com/rmyndharis/OpenWA/issues/1569)). Thanks @Magnarks for the report.
+- The takeover sweep marks as disconnected any session left `ready`, `initializing`, `authenticating` or `action_required` by a node that never returned, regardless of `AUTO_START_SESSIONS`.
+- The takeover sweep also marks a lapsed `qr_ready` session with no phone as disconnected; one with a phone keeps its status.
+- Reconnect on a dashboard session card that reads `initializing` or `qr_ready` with no engine loaded starts the session, instead of opening a QR modal that never receives a code.
+- Branch Docker images (`:main`, sha tags) rebuild the production stage without the build cache, so they cannot serve stale OS packages.
+- The Docker image upgrades the Debian packages inherited from the digest-pinned `node:22-slim` base at build time, so security fixes published after the base snapshot reach them; this clears CVE-2026-86145 and CVE-2026-89161 in `libpcre2-8-0`.
+- The Message Tester's bulk-recipients file picker refuses files over 2 MB before reading them.
+- `restore.sh` refuses to overwrite a live database without `--force` even when the operator's sqlite3 rc file changes its output format.
+- A misspelled `LOG_LEVEL` fails the boot naming the accepted values, instead of silently logging at info.
+- Dependabot can open better-sqlite3 13.x patch and minor updates again; the freeze now starts at v14.
+- A request forwarded to the node that owns its session answers `504` or `502`, not `503`, when the forward times out or breaks after the request was sent, so a client retrying on `503` no longer repeats a send the owner may have carried out; `503` remains for an owner that could not be reached at all.
+- The dashboard Logs page and its sidebar entry are shown to admin keys only, matching the ADMIN-only `GET /api/audit` it reads.
+- The dashboard Sessions page hides Show QR for viewer keys, since the QR is operator-only.
+- The dashboard Sessions page re-reads the session list once after a failed read, as soon as live updates are connected, and regains that retry after a successful read, instead of keeping the error until a reload.
+- The dashboard Templates page shows a load or permission error when the template list cannot be read, instead of "No templates saved".
+- The dashboard Webhooks Configured card shows a placeholder instead of 0 when the webhook list cannot be read.
+- Dashboard message search ignores a response that arrives after a newer query, so stale results no longer replace the current ones.
+- A session whose automatic reconnect fails to relaunch the engine (a network, DNS or browser launch error) keeps retrying with backoff instead of stopping in `failed` until restarted by hand; an authentication failure or a stale browser profile still ends in `failed` ([#1580](https://github.com/rmyndharis/OpenWA/issues/1580)).
+- The `504` a start returns when the engine does not finish initializing names every possible cause, an unreachable WhatsApp Web, network or session proxy and a browser stalled during startup, instead of ruling the network out ([#1601](https://github.com/rmyndharis/OpenWA/issues/1601)).
+- A session that runs out of reconnect attempts fires the `session:error` plugin hook when it lands in `failed`.
+- A session that runs out of reconnect attempts keeps the last attempt's failure reason in `lastError` and in the `session:error` hook, after the attempts message.
+- A stop during the retry delay after a transient start failure is no longer undone by the retry; a stop or delete the ownership fence refused leaves the retry alone.
+- In a multi-node deployment, a start cut short by a concurrent stop releases its claim, so a peer no longer adopts and restarts the stopped session.
+- A stop or delete that fails on a database error no longer blocks the session's next automatic reconnect or makes a later start answer "already started".
+- A logout or force-kill refused as "not started" leaves the session's claim untouched, so a crashed node's session stays visible to the takeover sweep.
+- `GET /api/sessions/:sessionId/presence/:chatId` returns `null` once the session has no running engine, instead of the last presence reported before a stop, logout, force-kill or failure.
+- An explicit `maxReconnectAttempts` is honoured and the reconnect delay is capped at 5 minutes; the budget used to restart once the backoff passed 5 minutes, so a limit above about 6 attempts was never reached and the documented 1-hour cap never applied.
+- The webhook delivery reconciler no longer replays a delivery that is still waiting for a dispatch slot or retrying on the node that dispatched it, which sent a duplicate outside `WEBHOOK_DISPATCH_CONCURRENCY` and could close a slow delivery as failed while it was still running.
+- `session.reconnect_loop` webhooks carry an idempotency key salted per occurrence, so an alert from a later outage that reaches the same attempt count is no longer deduplicated onto the earlier one or left without a delivery record.
+- A bulk batch sends each message through the session's current engine, so a reconnect or restart mid-batch no longer fails every remaining message.
+- `POST /messages/send-bulk` answers 400 for an item with an empty `chatId`, a text item without text, or a media item without a `url` or `base64` under its type; such items used to be accepted with 202 and fail later.
+- `POST /messages/send-bulk` answers 400, not 500, when a concurrent request already created the same `batchId`.
+- `PUT /templates/:id` answers 400, not 500, for a `null` `name` or `body`.
+- `GET /api/search` answers 400, not 500, for a fractional `limit` or `offset`.
+- `POST /messages/send-template` without `templateId` or `templateName` answers 400 instead of 404.
+- The label upsert documentation no longer says omitted fields are kept: the write replaces the whole label, so an omitted name or colour is not preserved.
+- Restoring a PostgreSQL backup into SQLite stores creation and update timestamps in SQLite's own format, so restored pending webhook deliveries and ingress events are replayed on the day they were created instead of from the next UTC day.
+- The `POST /api/infra/import-data` schema and the API docs state 16 migration tables, including the `chatStates` and `webhookOutboxEvents` keys the restore already clears.
+- `GET /api/infra/storage/export` streams files into the archive one at a time instead of loading the whole media store into memory first, so exporting a large local or S3 store no longer exhausts memory.
+- A Baileys session behind an HTTP(S) proxy that never answers CONNECT no longer leaves an open connection to the proxy on every reconnect attempt.
+- A Baileys inbound media download that passes `MEDIA_DOWNLOAD_TIMEOUT_MS` before its stream opens stops instead of buffering in the background outside `INBOUND_MEDIA_CONCURRENCY`.
+- `BAILEYS_CHAT_STATE_CACHE_MAX` is listed in `.env.example` and forwarded by both bundled Compose files, so the Baileys chat-state cache cap can be raised from `.env`.
+
+### Dependencies
+
+- `multer` 2.2.0 to 2.3.0 via an override, closing three high-severity multipart denial-of-service advisories. It ships in the runtime tree.
+
+### Upgrade notes (behavior changes)
+
+- whatsapp-web.js: back up `sessions/` before upgrading. A rollback to an image with an older browser major deletes the stored WhatsApp logins unless `sessions/` is restored from that backup, and a session first paired after the upgrade must be paired again (see `docs/11-operational-runbooks.md`). Baileys sessions are unaffected.
+- Back up `sessions/` and `baileys/` before upgrading. The first boot renames each session's auth directory from the session name to its id; a rollback to 0.23.4 or earlier looks for the name-keyed directory, finds nothing, and starts every session on both engines at a QR code unless both directories are restored from that backup (see `docs/11-operational-runbooks.md`).
+- whatsapp-web.js on a non-container install: confirm no Chromium survived the stop before starting 0.23.5. The orphan sweep matches the session id from this release on, so a browser orphaned by a hard kill of the older version is no longer recognised and would hold the same profile as the one launched next to it.
+- The amd64 image moves from Chrome for Testing 146 to 153, so every amd64 rollback to 0.23.4 or earlier crosses a browser major; the arm64 image runs the chromium Debian ships at build time, whose major can differ between releases.
+- A `LOG_LEVEL` other than `error`, `warn`, `info`, `debug` or `verbose` now stops the boot instead of logging at info.
+- Multi-node deployments run the lapsed-status correction even with `AUTO_START_SESSIONS` off, so every node needs a synced clock and, on PostgreSQL, one time zone without daylight saving (`TZ=UTC` recommended); otherwise live sessions can be marked disconnected (see `docs/13-horizontal-scaling.md`).
+- A session with an explicit `maxReconnectAttempts` now stops in `failed` once those attempts run out during an outage; before, a limit above about 6 at the default base delay was never reached and the session retried indefinitely.
+- A dashboard or client signed in with a `VIEWER` key no longer receives the pairing QR over the `/events` WebSocket, matching the OPERATOR role `GET /api/sessions/{sessionId}/qr` already required.
+- Installing from source now needs Node.js 22.19 or newer; the published Docker image is unaffected.
+- Python SDK: `ChatHistoryMessage` marks the keys the contract always sends as required and narrows `type` and `kind` to literals, so a hand-built partial dict or a plain `str` assigned to either no longer type-checks.
+
+## [0.23.4] - 2026-09-05
+
+### Added
+
+- `GET /sessions/{sessionId}/chats` reports `muteExpiration`, the epoch-ms instant a mute ends
+  (`0` = indefinite), alongside `muted` ([#1473](https://github.com/rmyndharis/OpenWA/issues/1473)).
+  Thanks @usmancynosure and @purnamcommunity.
+- The dashboard Message Tester loads bulk recipients from a `.txt` or `.csv` file, one entry per line,
+  appended to the Recipients box. Thanks @harry0x.
+- `GET /sessions/{sessionId}/messages` accepts `inlineMedia=false`, omitting inline media payloads
+  while keeping each row's `{ omitted, sizeBytes }` marker and the media endpoint
+  ([#1516](https://github.com/rmyndharis/OpenWA/issues/1516)).
+- `GET /sessions/{sessionId}/messages` accepts `after`, a keyset cursor on the previous page's last
+  `id`, so a message arriving mid-walk cannot repeat or skip a page; `offset` is unchanged
+  ([#1479](https://github.com/rmyndharis/OpenWA/issues/1479)).
+- Each engine names the install-time patches its library is missing at startup, not only the
+  message-id backport. Diagnostic only; startup continues. See docs/12.
+- The dashboard API Keys page can scope an operator or viewer key to chosen sessions, on creation and
+  after; an empty picker keeps access to every session. `allowedSessions` was already in the REST API.
+  Thanks @sebathi.
+- `PUPPETEER_PROTOCOL_TIMEOUT_MS` raises the per-browser-command budget on whatsapp-web.js for large
+  accounts hitting `Runtime.callFunctionOn timed out`; unset keeps Puppeteer's default. See docs/12.
+  Thanks @JuanGalzerano.
+- `GET` and `PATCH /api/sessions/{sessionId}/proxy` read and update a session's egress proxy;
+  credentials are never returned and changes apply on the next start
+  ([#1474](https://github.com/rmyndharis/OpenWA/issues/1474)). Thanks @vitusan.
+- Sessions dashboard: set a proxy when creating a session, and view, change or clear it afterwards.
+  Thanks @vitusan.
+- The dashboard chat room loads older history as you scroll up, paged by DB rows already fetched and
+  holding the reading position when a page is prepended. Thanks @JuanGalzerano.
+- Webhook filters and automation rules can match on chat `kind` (`individual`, `group`, `channel`,
+  `status`, `broadcast`, `unknown`), separating channel traffic the `isGroup` boolean could not
+  ([#1500](https://github.com/rmyndharis/OpenWA/issues/1500)).
+- `GET /sessions/{sessionId}/chats` and `.../labels/{labelId}/chats` report each chat's `archived`,
+  `pinned` and `muted` state; the archive/pin/mute actions existed but the list never reported the
+  result back.
+
+### Changed
+
+- `ChatSummary` gained three required fields (`archived`, `pinned`, `muted`). Every producer and the
+  SDK types set them, but a hand-built `ChatSummary` fixture, mock or stub must supply the three.
+- A whatsapp-web.js protocol timeout is no longer classified as a dead page. Behaviour is unchanged on
+  the current Puppeteer; the guard pins the intent against a future bump.
+- `GET /sessions/{sessionId}/contacts` declares and answers `503` when the whatsapp-web.js page dies
+  mid-read, instead of a bare `500`. Thanks @Deyvis17GY.
+- All five clients document the 16-character minimum on a webhook `secret`, and that an empty string
+  clears it on update. The constraint is unchanged; until now only the gateway named it.
+
+### Fixed
+
+- Baileys chat `muted`, `archived` and `pinned` state now survives a reconnect or process restart.
+  WhatsApp does not re-deliver it, so it is persisted per chat and rehydrated on boot.
+- Paged lists tiebreak on `id`, so a walk returns every row once. On PostgreSQL a non-unique sort key
+  could repeat and drop rows across pages, on the message, session, webhook and delivery-failure lists
+  and `GET /search`. `offset` still shifts under concurrent writes.
+- `PUT /sessions/{sessionId}/groups/{groupId}/description` no longer answers a bare `500` on
+  whatsapp-web.js. A new install-time patch (🔧⁹, docs/29) calls `setGroupDescription` with the
+  options object the library now expects; an empty description still clears. Thanks @purnamcommunity.
+- whatsapp-web.js contact reads resolve the renamed `$1` serialized-id field, so contacts keep their
+  `id` on a WhatsApp Web build that renamed it; an unreadable entry is skipped and logged.
+  Thanks @Deyvis17GY.
+- Inbound media whose download fails keeps the `media` envelope with `omitted: true` and the declared
+  size on both engines, instead of dropping the field.
+- Webhook filters and automation rules gated on `hasMedia` now match those omitted-media messages.
+- Baileys logs a failed inbound media download at `warn`, not `debug`, so it is visible by default.
+- The webhook `secret` example in Swagger and the API reference now meets the 16-character floor, so
+  pasting it back no longer answers `400`; both webhook routes publish the length rule
+  ([#1491](https://github.com/rmyndharis/OpenWA/issues/1491)). Thanks @onepay-ye.
+- `STORAGE_TYPE=s3` missing `S3_ACCESS_KEY_ID` or `S3_SECRET_ACCESS_KEY` warns at startup and names
+  the unset one, instead of silently writing every file to local disk. Thanks @onepay-ye.
+- Six whatsapp-web.js contact operations (blocked list, number lookup, addressbook save and delete,
+  block, unblock) answer the `503` their routes document when the page dies, not a bare `500`
+  ([#1476](https://github.com/rmyndharis/OpenWA/issues/1476)). Thanks @onepay-ye.
+- Fifteen more whatsapp-web.js operations answer `503` not `500` when the page dies mid-request: the
+  group list and membership queue, four label reads and writes, and nine message operations. Twelve
+  had no error handling on that path. The message sends keep `500` deliberately, since `503` is
+  replay-safe in the clients and would duplicate a message.
+- The seven routes that answer the media byte cap's `413` now declare it: the five media sends,
+  `send-bulk` and the group picture. `docs/06` had called it `400` on two. Behaviour is unchanged.
+  Thanks @onepay-ye.
+- `.env.example` no longer calls an oversized base64 send a `400` (it is `413`), and no longer implies
+  `MINIO_BUILTIN=true` fills the S3 credentials. Thanks @onepay-ye.
+- A caller-supplied message id can no longer be read as a dead browser page. The whatsapp-web.js
+  transport classifier matched its pattern against the gateway's own not-found errors, so a request
+  naming a message id of `Target closed` tore the session down and answered `503` instead of `404`.
+  Gateway-constructed errors are now excluded.
+- The four whatsapp-web.js status posts, the channel create and the call-link create answer `500`, not
+  `503`, when the page dies: `503` is replayed for a POST and could publish twice. `DELETE` on a
+  status keeps `503` and now declares it.
+- An `allowedSessions` entry that is empty, whitespace-padded, comma-bearing or duplicated is refused.
+  The column stores a comma join, so `[""]` read back as "every session", and a key meant to be scoped
+  could reach everything.
+- Messages sharing one second come back in arrival order on SQLite, the default database. The
+  tiebreaker was a random uuid, so a burst, bulk send or backfill rendered shuffled; it is now the
+  stored insertion sequence. PostgreSQL keeps the uuid order.
+- A send reconciling against its own echo no longer overwrites the delivery state. A `delivered` ack
+  arriving before the send's second save was pulled back to `sent`.
+- `GET /sessions/{sessionId}/messages` treats a blank `after` as absent, like a blank `limit` or
+  `offset`, instead of `400`; the `400` for a cursor naming no row is deliberate and now declared.
+- The dashboard holds a reader's position when an image finishes decoding above them. The correction
+  measured its baseline after the decode was already in layout, so it never ran.
+- The bulk-recipients upload reads a CSV column as one recipient; a row like `1,628123456789` had its
+  columns concatenated into a different, plausible-looking number.
+- The four media knobs (`MEDIA_DOWNLOAD_MAX_BYTES`, `MEDIA_DOWNLOAD_TIMEOUT_MS`,
+  `INBOUND_MEDIA_CONCURRENCY`, `CHAT_HISTORY_MEDIA_BUDGET_BYTES`) refuse a unit-suffixed value at boot;
+  `50mb` had resolved to a 50-byte cap with nothing naming the cause.
+- `GET /api/infra/export-data` strips the userinfo from a session's proxy URL, as it already did for
+  webhook secrets; scheme and host survive so a restore cannot silently connect direct.
+- `GET /sessions/{sessionId}/contacts/{contactId}` declares the `503` it answers when the page dies,
+  distinct from the `404` for an absent contact.
+- `SessionProxyResponseDto.proxyType` admits `null`, so the ordinary "no proxy" response no longer
+  contradicts its own schema.
+- `check:audit` and `check:contract-shapes` run from a checkout path that needs URL escaping; both had
+  exited `0` having run nothing, so the jobs behind them reported a false pass. Thanks @JuanGalzerano.
+- docs/29 names the Baileys build the tree installs, and the counts spec binds both engine library
+  versions to the pins.
+- An unusable `sharp` no longer fails the gateway at boot. It backs one Baileys sticker route but was
+  imported at the top of a module both engines load, so a native binary that could not load took the
+  process down. It now loads lazily and only that route degrades
+  ([#1459](https://github.com/rmyndharis/OpenWA/issues/1459)).
+- whatsapp-web.js `requestPairingCode` no longer hangs when it lands during a QR-page reload. The
+  in-page call ran against a destroyed context and hung until Puppeteer's protocol timeout; it is now
+  bounded per attempt and the navigation and timeout shapes are retried, so a code returns instead of
+  "Creating pairing code..." forever ([#1543](https://github.com/rmyndharis/OpenWA/issues/1543)).
+  Thanks @emadhashem0.
+
+### Dependencies
+
+- `browserslist` 4.28.2 to 4.28.8 in both trees, closing two high-severity advisories. Dev-only and
+  transitive, so nothing that ships changes.
+- `fast-uri` 3.1.5 to 3.1.7 via an override, closing four high-severity advisories (two host-confusion,
+  two SSRF). It reaches the runtime tree through `@modelcontextprotocol/sdk`, so this one ships.
+- Force `@puppeteer/browsers` to 3.x through an override, dropping the vulnerable `extract-zip` and
+  closing `GHSA-jmr9-qjv8-65gv`, while keeping Puppeteer 24 in place. The amd64 image installs `unzip`
+  for `@puppeteer/browsers` 3's Chrome for Testing extraction. Thanks @raoulmusci.
 
 ## [0.23.3] - 2026-08-24
 

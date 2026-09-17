@@ -120,12 +120,12 @@ export interface ChatPresence {
  * A label create-or-update body. The id travels in the path, because WhatsApp keys the write on it.
  */
 export interface UpsertLabelRequest {
-  /** Leave out to keep the current name. */
+  /** Not preserved when left out: the write replaces the whole label. */
   name?: string;
   /**
    * WhatsApp's colour INDEX (0-19), NOT a hex value — it does not round-trip with the `hexColor`
-   * labels are read back with, because neither engine exposes the mapping. Leave out to keep the
-   * current colour.
+   * labels are read back with, because neither engine exposes the mapping. Not preserved when
+   * left out either.
    */
   color?: number;
 }
@@ -177,6 +177,19 @@ export interface UpdateSessionConfigRequest {
   autoRejectCalls?: boolean | null;
   maxReconnectAttempts?: number | null;
   reconnectBaseDelay?: number | null;
+}
+
+/** Masked per-session proxy configuration — credentials are never returned. */
+export interface SessionProxy {
+  enabled: boolean;
+  proxyType: 'http' | 'https' | 'socks4' | 'socks5' | null;
+  proxyHost: string | null;
+  hasCredentials: boolean;
+}
+
+/** Update per-session proxy settings. Send `proxyUrl: null` to clear. Applies on the next start. */
+export interface UpdateSessionProxyRequest {
+  proxyUrl?: string | null;
 }
 
 export interface CreateSessionRequest {
@@ -455,6 +468,10 @@ export interface ListMessagesQuery {
   from?: Jid;
   limit?: number;
   offset?: number;
+  /** Keyset cursor: the `id` of the last message of the previous page. Takes precedence over `offset`. */
+  after?: string;
+  /** Set false to omit inline media payloads. The budget is per response, so a walk repays it per page. */
+  inlineMedia?: boolean;
 }
 
 export interface MessageHistoryQuery {
@@ -518,6 +535,8 @@ export type MessageType =
   | 'poll'
   | 'call'
   | 'revoked'
+  | 'order'
+  | 'product'
   | 'masked'
   | 'unknown';
 
@@ -576,6 +595,10 @@ export interface ChatHistoryMessage {
   };
   quotedMessage?: { id: string; body: string };
   location?: { latitude: number; longitude: number; description?: string; address?: string; url?: string };
+  /** Present on `order` messages only: the placed cart, plus the single-order token for its items. */
+  order?: { orderId: string; token?: string };
+  /** Present on `product` messages only: the catalog product shared into the chat. */
+  product?: { productId: string; title?: string; description?: string; businessOwnerJid?: Jid };
 }
 
 /** Paginated payload returned by `GET /sessions/:id/messages`. */
@@ -899,7 +922,10 @@ export interface WebhookFilters {
 export interface CreateWebhookRequest {
   url: string;
   events?: WebhookEvent[];
-  /** HMAC secret; signed as `X-OpenWA-Signature: sha256=…`. */
+  /**
+   * HMAC secret; signed as `X-OpenWA-Signature: sha256=…`. At least 16 characters, or the gateway
+   * answers 400. Omit for unsigned deliveries. Never returned by a read.
+   */
   secret?: string;
   headers?: Record<string, string>;
   filters?: WebhookFilters | null;
@@ -907,6 +933,10 @@ export interface CreateWebhookRequest {
   retryCount?: number;
 }
 
+/**
+ * Every field is a partial update. `secret: ''` and `headers: {}` are the documented "clear it"
+ * values; any other secret is still held to the 16-character minimum.
+ */
 export type UpdateWebhookRequest = Partial<CreateWebhookRequest> & { active?: boolean };
 
 export interface WebhookResponse {
@@ -930,6 +960,25 @@ export interface WebhookTestResult {
   error?: string;
 }
 
+/** A webhook delivery abandoned after every retry, as listed by the delivery-failure log. */
+export interface WebhookDeliveryFailure {
+  id: string;
+  webhookId: string;
+  sessionId: string;
+  event: string;
+  url: string;
+  /** The idempotency key the receiver would have deduped on. */
+  idempotencyKey?: string | null;
+  deliveryId?: string | null;
+  /** Total attempts made before giving up. */
+  attempts: number;
+  /** Last HTTP status when the failure was a non-2xx response; null for a network or timeout error. */
+  lastStatusCode?: number | null;
+  lastError: string;
+  /** ISO timestamp of when the delivery was finally abandoned. */
+  createdAt: string;
+}
+
 // ── Chat (session-scoped chat operations) ─────────────────────────
 
 export interface ChatSummary {
@@ -942,6 +991,14 @@ export interface ChatSummary {
   /** Unix seconds of the last activity. */
   timestamp: number;
   kind: ChatKind;
+  /** Archived state, as set via {@link ChatsResource.archive}. */
+  archived: boolean;
+  /** Pinned state, as set via {@link ChatsResource.pin}. */
+  pinned: boolean;
+  /** Whether the chat is muted right now, as set via {@link ChatsResource.mute}. */
+  muted: boolean;
+  /** Epoch milliseconds the mute ends, present only when muted; 0 means indefinitely. */
+  muteExpiration?: number;
 }
 
 /** Body for {@link SessionsResource.setOnlinePresence}. */

@@ -1,4 +1,3 @@
-import sharp from 'sharp';
 import type * as BaileysLib from '@whiskeysockets/baileys';
 import type { AnyMessageContent, MiscMessageGenerationOptions, WAMessage, WASocket } from '@whiskeysockets/baileys';
 import { generateSafeLinkPreview } from './safe-link-preview';
@@ -19,7 +18,7 @@ import {
 import { toEngineParticipants } from './baileys-groups';
 import { buildVCard } from './vcard';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { MessageNotFoundError } from '../../common/errors/message-not-found.error';
 import { type createLogger } from '../../common/services/logger.service';
@@ -32,6 +31,8 @@ import { BAILEYS_QUERY_BUDGET_MS, withQueryDeadline } from './baileys-query-dead
  * delegate never touches lifecycle state directly.
  */
 export interface BaileysMessagingHost {
+  /** This session's egress proxy URL (snapshotted at session start), or undefined when direct. */
+  sessionProxyUrl(): string | undefined;
   ensureReady(): void;
   /** Post-ensureReady socket handle — call host.ensureReady() first. */
   getSocket(): WASocket;
@@ -86,6 +87,21 @@ function isWebpBuffer(data: Buffer): boolean {
  * `{ animated: true }` is not optional — without it sharp silently keeps only the first frame, which
  * would reintroduce the same quiet-corruption this function exists to remove.
  */
+/**
+ * Load the deferred `sharp` binary, mapping a LOAD failure to a 500 rather than the decode path's 400.
+ * A native-binary load failure (older CPU, stripped/musl image, missing prebuilt) is a host capability
+ * gap: a valid PNG would hit it too, so reporting it as a 400 tells the caller their image is malformed.
+ */
+export async function loadSharp() {
+  try {
+    return (await import('sharp')).default;
+  } catch (error) {
+    throw new InternalServerErrorException(
+      `Sticker conversion is unavailable: sharp could not load (${error instanceof Error ? error.message : String(error)}).`,
+    );
+  }
+}
+
 async function toWebpSticker(data: Buffer, mimetype: string): Promise<Buffer> {
   if (isWebpBuffer(data)) {
     return data;
@@ -98,6 +114,12 @@ async function toWebpSticker(data: Buffer, mimetype: string): Promise<Buffer> {
       `A sticker must be a WebP image, or an image this gateway can convert to one. Received '${mimetype}'.`,
     );
   }
+  // Imported lazily so an unusable `sharp` (a native binary that will not build or load on an older
+  // CPU, a stripped image) degrades ONLY this one Baileys sticker route instead of killing the whole
+  // gateway at boot. `sharp` sits at the top of a module the built-in engine loads unconditionally, so
+  // an eager import made a single optional capability a hard boot requirement on both engines. Same
+  // deferral the adapters already use for the engine libraries themselves.
+  const sharp = await loadSharp();
   try {
     return await sharp(data, { animated: true })
       .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -112,13 +134,21 @@ async function toWebpSticker(data: Buffer, mimetype: string): Promise<Buffer> {
   }
 }
 
-/** Resolve a MediaInput's data (Buffer | base64 string | http(s) URL) to bytes + mimetype. */
-export async function resolveMediaBuffer(media: MediaInput): Promise<{ data: Buffer; mimetype: string }> {
+/**
+ * Resolve a MediaInput's data (Buffer | base64 string | http(s) URL) to bytes + mimetype.
+ *
+ * `sessionProxyUrl` is this session's egress proxy, which the URL fetch leaves through (#1626). It
+ * is required, not optional, so a new call site cannot fetch direct on a proxied session by omission.
+ */
+export async function resolveMediaBuffer(
+  media: MediaInput,
+  sessionProxyUrl: string | undefined,
+): Promise<{ data: Buffer; mimetype: string }> {
   if (Buffer.isBuffer(media.data)) {
     return { data: media.data, mimetype: media.mimetype };
   }
   if (/^https?:\/\//i.test(media.data)) {
-    const fetched = await loadRemoteMediaBuffer(media.data);
+    const fetched = await loadRemoteMediaBuffer(media.data, sessionProxyUrl);
     // A generic placeholder mimetype (buildMediaInput's 'application/octet-stream' default when the
     // caller supplied none) carries no real signal — defer to the fetched response content-type,
     // which was sniffed from the actual bytes. This fixes URL-based sends where the caller has no
@@ -159,7 +189,7 @@ export class BaileysMessaging {
     // not only when a preview was asked for.
     const options = {
       ...(this.withEphemeral(jid) ?? {}),
-      getUrlInfo: (text: string) => generateSafeLinkPreview(text),
+      getUrlInfo: (text: string) => generateSafeLinkPreview(text, { sessionProxyUrl: this.host.sessionProxyUrl() }),
       // Merged rather than assigned: getUrlInfo above must survive, or the library's own vulnerable
       // preview generator becomes reachable again on quoted sends only.
       ...((await this.quoteOption(sendOptions?.quotedMessageId)) ?? {}),
@@ -294,7 +324,7 @@ export class BaileysMessaging {
 
   async sendImageMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
     this.host.ensureReady();
-    const { data, mimetype } = await resolveMediaBuffer(media);
+    const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl());
     return this.sendContent(
       chatId,
       {
@@ -309,7 +339,7 @@ export class BaileysMessaging {
 
   async sendVideoMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
     this.host.ensureReady();
-    const { data, mimetype } = await resolveMediaBuffer(media);
+    const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl());
     return this.sendContent(
       chatId,
       {
@@ -324,7 +354,7 @@ export class BaileysMessaging {
 
   async sendAudioMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
     this.host.ensureReady();
-    const { data, mimetype } = await resolveMediaBuffer(media);
+    const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl());
     return this.sendContent(
       chatId,
       // Audio carries no caption, so a mention here tags the recipient through contextInfo without
@@ -338,7 +368,7 @@ export class BaileysMessaging {
 
   async sendDocumentMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
     this.host.ensureReady();
-    const { data, mimetype } = await resolveMediaBuffer(media);
+    const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl());
     return this.sendContent(
       chatId,
       {
@@ -376,7 +406,7 @@ export class BaileysMessaging {
 
   async sendStickerMessage(chatId: string, media: MediaInput): Promise<MessageResult> {
     this.host.ensureReady();
-    const { data, mimetype } = await resolveMediaBuffer(media);
+    const { data, mimetype } = await resolveMediaBuffer(media, this.host.sessionProxyUrl());
     // A sticker has neither text nor caption, but stickerMessage carries a contextInfo like every
     // other content type, so a mention still tags the participant. The route accepts the field
     // (send-sticker shares SendMediaMessageDto) and docs/06 lists it among the media sends that
@@ -597,7 +627,10 @@ export class BaileysMessaging {
    */
   private previewSafeOptions(content: AnyMessageContent, options?: MiscMessageGenerationOptions) {
     if (!('text' in content)) return options;
-    return { ...(options ?? {}), getUrlInfo: (text: string) => generateSafeLinkPreview(text) };
+    return {
+      ...(options ?? {}),
+      getUrlInfo: (text: string) => generateSafeLinkPreview(text, { sessionProxyUrl: this.host.sessionProxyUrl() }),
+    };
   }
 
   private async sendContent(

@@ -14,11 +14,20 @@ import {
   Filter,
   Skull,
   Unlink,
+  Globe,
+  AlertCircle,
 } from 'lucide-react';
-import { sessionApi, type Session, type SessionConfig, type AccountRestriction } from '../services/api';
+import {
+  sessionApi,
+  type Session,
+  type SessionConfig,
+  type SessionProxy,
+  type AccountRestriction,
+} from '../services/api';
 import { queryKeys } from '../hooks/queries';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import {
+  awaitsPairing,
   canForceKillSession,
   canUnlinkSession,
   classifyUnlinkError,
@@ -26,7 +35,13 @@ import {
   replaceSession,
 } from '../utils/sessionActions';
 import { invalidateSessionQueries, reconcileSessionCache } from '../utils/sessionMutation';
-import { canCreateSession, filterSessions, isValidPairingPhone, sessionNameIssues } from '../utils/sessionForm';
+import {
+  canCreateSession,
+  filterSessions,
+  isValidPairingPhone,
+  isValidProxyUrl,
+  sessionNameIssues,
+} from '../utils/sessionForm';
 import { useToast } from '../hooks/useToast';
 import { useRole } from '../hooks/useRole';
 import { useSessionPairing } from '../hooks/useSessionPairing';
@@ -73,8 +88,26 @@ export function Sessions() {
   // fetched per session when the detail modal opens rather than N times to render the list.
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [proxySession, setProxySession] = useState<Session | null>(null);
+  const [proxyInfo, setProxyInfo] = useState<SessionProxy | null>(null);
+  const [proxyLoading, setProxyLoading] = useState(false);
+  const [proxySaving, setProxySaving] = useState(false);
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [proxyUrlError, setProxyUrlError] = useState<string | null>(null);
+  // A failed read must not look like "no proxy configured": saving from that state would clear a
+  // proxy, and the credentials with it, that the operator never got to see.
+  const [proxyLoadFailed, setProxyLoadFailed] = useState(false);
+
+  // Set while the last list read failed. Cleared as a read starts, so a connect that already triggered
+  // a reload (onReconnect) is not followed by a second read from the recovery effect below.
+  const listReadFailed = useRef(false);
+  // Spends the one retry the recovery effect below is allowed per connect. Given back by a read that
+  // actually succeeded, so a later independent failure on the same connection is retried too.
+  const retriedThisConnect = useRef(false);
 
   const fetchSessions = useCallback(async (): Promise<Session[]> => {
+    listReadFailed.current = false;
     try {
       // Background refetches — a websocket push, a mutation reloading the list — would otherwise
       // replace the whole page with a spinner for the length of a round-trip, so a restriction
@@ -82,6 +115,10 @@ export function Sessions() {
       if (!initialLoadDone.current) setLoading(true);
       const data = await sessionApi.list();
       setSessions(data);
+      // The list is current again, so an error left by an earlier failed read (or a create, whose toast
+      // already reported it) no longer describes the page, and the recovery retry is available again.
+      setError(null);
+      retriedThisConnect.current = false;
       // Keep the shared React Query cache (read by the Dashboard via useSessionsQuery /
       // useSessionStatsQuery) in sync after this page's mutations reload local state — otherwise the
       // Dashboard shows stale session counts/status. This runs on every reload (mount / WS-failed /
@@ -92,6 +129,7 @@ export function Sessions() {
       void invalidateSessionQueries(queryClient, queryKeys.sessions);
       return data;
     } catch (err) {
+      listReadFailed.current = true;
       setError(err instanceof Error ? err.message : t('sessions.create.errorDefault'));
       return [];
     } finally {
@@ -125,16 +163,26 @@ export function Sessions() {
     dismissQrForSession,
   } = useSessionPairing({ sessions, sessionsRef, reloadSessions: fetchSessions });
 
-  const { showCreateModal, setShowCreateModal, newSessionName, setNewSessionName, creating, handleCreate } =
-    useSessionCreateForm({
-      onCreated: newSession => {
-        // Functional append: never capture a stale `sessions` (a WS or fetch between the await and the
-        // setState would otherwise drop a row). Then invalidate the prefix so stats/groups/chats refresh.
-        setSessions(current => [...current, newSession]);
-        void invalidateSessionQueries(queryClient, queryKeys.sessions);
-      },
-      onFailed: msg => setError(msg),
-    });
+  const {
+    showCreateModal,
+    setShowCreateModal,
+    newSessionName,
+    setNewSessionName,
+    useProxy,
+    setUseProxy,
+    proxyUrl: createProxyUrl,
+    setProxyUrl: setCreateProxyUrl,
+    creating,
+    handleCreate,
+  } = useSessionCreateForm({
+    onCreated: newSession => {
+      // Functional append: never capture a stale `sessions` (a WS or fetch between the await and the
+      // setState would otherwise drop a row). Then invalidate the prefix so stats/groups/chats refresh.
+      setSessions(current => [...current, newSession]);
+      void invalidateSessionQueries(queryClient, queryKeys.sessions);
+    },
+    onFailed: msg => setError(msg),
+  });
 
   // Reconcile the LOCAL view with an authoritative Session response. The previous handlers discarded
   // the response and fabricated `{ status: 'disconnected' }`, losing phone:null, timestamps, and other
@@ -154,16 +202,22 @@ export function Sessions() {
     [queryClient, dismissQrForSession],
   );
 
-  useSessionFeed({
+  // A restriction push and a recovered socket mean the same thing to this page: the local list may be
+  // behind the server, re-read it. (The badge renders from the server projection
+  // `session.restriction`, and a restriction can arrive with no status transition at all, because the
+  // Baileys reachout timelock rides a connect probe, so that push is purely a refetch signal.)
+  const refetchSessions = useCallback(() => {
+    void fetchSessions();
+  }, [fetchSessions]);
+
+  const { isConnected, connectionFailed, reconnect } = useSessionFeed({
     sessions,
     sessionsRef,
     onQRCode: applyQrPush,
-    // The badge renders from the server projection (`session.restriction`), and a restriction can
-    // arrive with no status transition at all (the Baileys reachout timelock rides a connect
-    // probe) — so the push is purely a refetch signal.
-    onSessionRestriction: useCallback(() => {
-      void fetchSessions();
-    }, [fetchSessions]),
+    onSessionRestriction: refetchSessions,
+    // Everything pushed during a socket gap is lost, and nothing else on this page re-reads the list
+    // after mount, so a card would sit on its pre-gap status until the operator reloaded.
+    onReconnect: refetchSessions,
     onSessionStatus: useCallback(
       (event: { sessionId: string; status: string }) => {
         const prev = sessionsRef.current.find(s => s.id === event.sessionId);
@@ -213,6 +267,25 @@ export function Sessions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A connected feed means the gateway answers again, but the feed only reports a RECONNECT: a first
+  // connect that lands after socket.io's own retries (the gateway was restarting at mount) fires no
+  // onReconnect, and no status push re-reads the list, so the failed mount read would stay on screen
+  // with no cards. `error` is a dependency so a read that fails after the connect is retried too, but
+  // only once per connect: failures whose messages differ (a 502, then a 504) would otherwise each
+  // change `error` and re-read the list with no backoff for as long as the upstream stays down. The
+  // allowance (declared with `listReadFailed` above) is given back by a successful read, so the loop
+  // stays closed while a later failure on the same connection is still retried.
+  useEffect(() => {
+    if (!isConnected) {
+      retriedThisConnect.current = false;
+      return;
+    }
+    if (listReadFailed.current && !retriedThisConnect.current) {
+      retriedThisConnect.current = true;
+      void fetchSessions();
+    }
+  }, [isConnected, error, fetchSessions]);
+
   const handleDelete = async (id: string) => {
     const session = sessions.find(s => s.id === id);
     try {
@@ -235,13 +308,10 @@ export function Sessions() {
     }
   };
 
+  // Start and Reconnect only render for a card with no engine behind it, so they always call the
+  // gateway. A leftover `initializing` or `qr_ready` status (a node that died mid-pairing) is no reason
+  // to open the QR modal instead: GET /qr answers 400 until something starts the session.
   const handleStart = async (id: string) => {
-    const session = sessions.find(s => s.id === id);
-    if (session && ['initializing', 'qr_ready'].includes(session.status)) {
-      handleShowQR(id);
-      return;
-    }
-
     try {
       // Use the authoritative response instead of fabricating a status. The old code wrote a local
       // `status: 'connecting'` — a value the gateway never emits — while keeping every other field
@@ -305,6 +375,76 @@ export function Sessions() {
       toast.error(t('sessions.details.autoRejectCalls'), err instanceof Error ? err.message : t('common.unknownError'));
     } finally {
       setSavingConfig(false);
+    }
+  };
+
+  const proxySessionId = proxySession?.id ?? null;
+  useEffect(() => {
+    setProxyInfo(null);
+    setProxyEnabled(false);
+    setProxyUrl('');
+    setProxyUrlError(null);
+    setProxyLoadFailed(false);
+    if (!proxySessionId) return;
+    let cancelled = false;
+    setProxyLoading(true);
+    sessionApi
+      .getProxy(proxySessionId)
+      .then(data => {
+        if (cancelled) return;
+        setProxyInfo(data);
+        setProxyEnabled(data.enabled);
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setProxyLoadFailed(true);
+          toast.error(t('dashboard.loadError'), err instanceof Error ? err.message : t('common.unknownError'));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setProxyLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Only the session being edited belongs in here. `t` and `toast` are recreated on every render of
+    // their providers (ToastContext hands out a fresh object literal), so listing them re-runs this
+    // effect whenever any toast appears or auto-dismisses, wiping the URL mid-typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proxySessionId]);
+
+  const handleProxySave = async () => {
+    if (!proxySession) return;
+    if (proxyEnabled) {
+      const trimmed = proxyUrl.trim();
+      if (!trimmed && !proxyInfo?.enabled) {
+        setProxyUrlError(t('sessions.proxy.invalidUrl'));
+        return;
+      }
+      if (trimmed && !isValidProxyUrl(trimmed)) {
+        setProxyUrlError(t('sessions.proxy.invalidUrl'));
+        return;
+      }
+    }
+    setProxyUrlError(null);
+    setProxySaving(true);
+    try {
+      if (!proxyEnabled) {
+        await sessionApi.updateProxy(proxySession.id, { proxyUrl: null });
+      } else if (proxyUrl.trim()) {
+        await sessionApi.updateProxy(proxySession.id, { proxyUrl: proxyUrl.trim() });
+      } else if (proxyInfo?.enabled) {
+        setProxySession(null);
+        return;
+      } else {
+        return;
+      }
+      toast.success(t('sessions.proxy.saveSuccessTitle'), t('sessions.proxy.saveSuccess'));
+      setProxySession(null);
+    } catch (err) {
+      toast.error(t('sessions.proxy.saveError'), err instanceof Error ? err.message : t('common.unknownError'));
+    } finally {
+      setProxySaving(false);
     }
   };
 
@@ -378,6 +518,9 @@ export function Sessions() {
   const existingSessionNames = sessions.map(s => s.name);
   // Empty is a disabled button, not a message: the form stays quiet until the user types something.
   const nameIssues = newSessionName ? sessionNameIssues(newSessionName, existingSessionNames) : [];
+  // One term: isValidProxyUrl rejects '' too, so the emptiness check was redundant, and its
+  // `string && boolean` shape widened this to `boolean | ""`, which the disabled prop rejects.
+  const createProxyInvalid = useProxy && !isValidProxyUrl(createProxyUrl.trim());
 
   if (loading) {
     return (
@@ -404,6 +547,19 @@ export function Sessions() {
           )
         }
       />
+
+      {/* The live feed is dead until the operator retries: the socket exhausted its attempts, or the
+          server closed it. Without this the cards freeze on their last pushed status and a session
+          that has since dropped is indistinguishable from a healthy idle page. */}
+      {connectionFailed && (
+        <div className="error-banner" role="alert">
+          <AlertCircle size={20} />
+          <span className="error-banner-text">{t('sessions.feedDisconnected')}</span>
+          <button className="btn-secondary" style={{ marginInlineStart: 'auto' }} onClick={reconnect}>
+            {t('common.refresh')}
+          </button>
+        </div>
+      )}
 
       <div className="filters-bar">
         <div className="search-input">
@@ -459,7 +615,7 @@ export function Sessions() {
               <button
                 className="btn-primary"
                 onClick={handleCreate}
-                disabled={creating || !canCreateSession(newSessionName, existingSessionNames)}
+                disabled={creating || !canCreateSession(newSessionName, existingSessionNames) || createProxyInvalid}
               >
                 {creating ? <Loader2 className="animate-spin" size={16} /> : t('common.create')}
               </button>
@@ -486,6 +642,33 @@ export function Sessions() {
             <p className="input-error">{t('sessions.create.tooLong', { length: newSessionName.length })}</p>
           )}
           {nameIssues.includes('duplicate') && <p className="input-error">{t('sessions.create.duplicate')}</p>}
+          <div className="proxy-form-section">
+            <label className="detail-toggle-row" htmlFor="create-use-proxy">
+              <span>{t('sessions.proxy.enabled')}</span>
+              <input
+                id="create-use-proxy"
+                type="checkbox"
+                checked={useProxy}
+                onChange={e => setUseProxy(e.target.checked)}
+              />
+            </label>
+            {useProxy && (
+              <>
+                <label htmlFor="create-proxy-url">{t('sessions.proxy.url')}</label>
+                <input
+                  id="create-proxy-url"
+                  type="text"
+                  placeholder={t('sessions.proxy.urlPlaceholder')}
+                  value={createProxyUrl}
+                  onChange={e => setCreateProxyUrl(e.target.value)}
+                />
+                {createProxyInvalid && createProxyUrl.trim() && (
+                  <p className="input-error">{t('sessions.proxy.invalidUrl')}</p>
+                )}
+                <p className="input-hint">{t('sessions.proxy.createHint')}</p>
+              </>
+            )}
+          </div>
         </Modal>
       )}
 
@@ -695,6 +878,110 @@ export function Sessions() {
         </Modal>
       )}
 
+      {proxySession && (
+        <Modal
+          open
+          onClose={() => setProxySession(null)}
+          title={
+            <span className="modal-title">
+              {t('sessions.proxy.title')}
+              <span className="session-name">{proxySession.name}</span>
+            </span>
+          }
+          closeLabel={t('common.close')}
+          footer={
+            <>
+              <button className="btn-secondary" onClick={() => setProxySession(null)}>
+                {t('common.cancel')}
+              </button>
+              {canWrite && !proxyLoadFailed && (
+                <button
+                  className="btn-primary"
+                  onClick={() => void handleProxySave()}
+                  disabled={proxySaving || proxyLoading}
+                >
+                  {proxySaving ? <Loader2 className="animate-spin" size={16} /> : t('common.save')}
+                </button>
+              )}
+            </>
+          }
+        >
+          {proxyLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem' }}>
+              <Loader2 className="animate-spin" size={24} />
+            </div>
+          ) : proxyLoadFailed ? (
+            // No form at all: an editable form defaulting to "off" invites a Save that clears a
+            // proxy nobody could read back, credentials included.
+            <div className="detail-grid proxy-form-section">
+              <div className="detail-item">
+                <span className="detail-value">{t('dashboard.loadError')}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="detail-grid proxy-form-section">
+              <div className="detail-item">
+                <span className="detail-label">{t('sessions.proxy.status')}</span>
+                <span className="detail-value">
+                  {proxyInfo?.enabled
+                    ? t('sessions.proxy.configured', {
+                        host: proxyInfo.proxyHost ?? '—',
+                        type: proxyInfo.proxyType ?? 'http',
+                      })
+                    : t('sessions.proxy.noProxy')}
+                </span>
+                {proxyInfo?.hasCredentials ? (
+                  <small className="detail-hint">{t('sessions.proxy.hasCredentials')}</small>
+                ) : null}
+              </div>
+              <div className="detail-item detail-item-toggle">
+                <div className="detail-toggle-row">
+                  <span className="detail-label" id="proxy-enabled-label">
+                    {t('sessions.proxy.enabled')}
+                  </span>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      aria-labelledby="proxy-enabled-label"
+                      checked={proxyEnabled}
+                      disabled={!canWrite || proxySaving}
+                      onChange={e => setProxyEnabled(e.target.checked)}
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+              {proxyEnabled && (
+                <>
+                  <div className="detail-item">
+                    <label className="detail-label" htmlFor="proxy-url">
+                      {t('sessions.proxy.url')}
+                    </label>
+                    <input
+                      id="proxy-url"
+                      type="text"
+                      placeholder={
+                        proxyInfo?.enabled
+                          ? t('sessions.proxy.urlKeepPlaceholder', { host: proxyInfo.proxyHost ?? '' })
+                          : t('sessions.proxy.urlPlaceholder')
+                      }
+                      value={proxyUrl}
+                      disabled={!canWrite || proxySaving}
+                      onChange={e => {
+                        setProxyUrl(e.target.value);
+                        setProxyUrlError(null);
+                      }}
+                    />
+                    {proxyUrlError ? <p className="input-error">{proxyUrlError}</p> : null}
+                  </div>
+                </>
+              )}
+              <p className="input-hint">{t('sessions.proxy.hint')}</p>
+            </div>
+          )}
+        </Modal>
+      )}
+
       {deleteConfirmId && (
         <Modal
           open
@@ -801,17 +1088,21 @@ export function Sessions() {
                 <span className={`status-pill ${session.status}`}>{formatStatus(session.status)}</span>
               </div>
 
-              {session.status === 'initializing' || session.status === 'qr_ready' ? (
+              {awaitsPairing(session) ? (
                 <div className="qr-placeholder">
                   <QrCode size={80} className="qr-icon" />
                   <p>{session.status === 'qr_ready' ? t('sessions.qr.scanToConnect') : t('sessions.qr.preparing')}</p>
-                  <button
-                    className="btn-sm"
-                    onClick={() => handleShowQR(session.id)}
-                    disabled={session.status !== 'qr_ready'}
-                  >
-                    {session.status === 'qr_ready' ? t('sessions.qr.showQr') : t('sessions.qr.loading')}
-                  </button>
+                  {/* The QR is operator-only over REST and the socket, so a read-only key would open a
+                      modal that never gets a code. */}
+                  {canWrite && (
+                    <button
+                      className="btn-sm"
+                      onClick={() => handleShowQR(session.id)}
+                      disabled={session.status !== 'qr_ready'}
+                    >
+                      {session.status === 'qr_ready' ? t('sessions.qr.showQr') : t('sessions.qr.loading')}
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="session-info">
@@ -853,6 +1144,10 @@ export function Sessions() {
                 <button className="btn-action" onClick={() => setSelectedSession(session)}>
                   <Eye size={16} />
                   {t('sessions.actions.view')}
+                </button>
+                <button className="btn-action" onClick={() => setProxySession(session)}>
+                  <Globe size={16} />
+                  {t('sessions.actions.proxy')}
                 </button>
                 {canWrite && isSessionStarted(session) ? (
                   <button className="btn-action" onClick={() => handleStop(session.id)}>

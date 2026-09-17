@@ -78,6 +78,10 @@ export type MessageType =
   | 'poll'
   | 'call'
   | 'revoked'
+  // WhatsApp Business commerce: a customer's cart placed from the catalog, and a single product
+  // card shared into a chat. Both carry the ids the commerce APIs need — see `IncomingMessage`.
+  | 'order'
+  | 'product'
   // A message WhatsApp deliberately withheld from linked/companion devices (e.g. high-security
   // business OTPs): the payload is absent by design, not unparseable. See `mapBaileysMessageType`.
   | 'masked'
@@ -110,6 +114,28 @@ export interface IncomingMessage {
   mentionedIds?: string[];
   /** Set for `call` (call_log) messages: video vs voice, and whether an incoming call went unanswered. */
   call?: { video: boolean; missed: boolean };
+  /**
+   * Set for `order` messages: a cart the customer placed from the business catalog. The message
+   * carries no line items — `orderId` plus the single-order `token` are the correlation handle a
+   * caller redeems against WhatsApp's own order lookup, which this project does not expose, so both
+   * must survive to that caller. Both engines populate them.
+   */
+  order?: {
+    orderId: string;
+    /** Opaque, single-order credential. Pass through unchanged; do not log it. */
+    token?: string;
+  };
+  /**
+   * Set for `product` messages: the catalog product shared into the chat. `productId` identifies it
+   * within `businessOwnerJid`'s catalog, so it resolves through the catalog routes only when that
+   * catalog is the session's own. Both engines populate `productId`; the rest are best-effort.
+   */
+  product?: {
+    productId: string;
+    title?: string;
+    description?: string;
+    businessOwnerJid?: string;
+  };
   /**
    * Set by the adapter when the sender is identified by a privacy id (e.g. a WhatsApp `@lid`) rather
    * than a phone number, so engine-neutral code can decide whether to attempt phone resolution without
@@ -491,6 +517,25 @@ export interface ChatSummary {
   unreadCount: number;
   timestamp: number;
   lastMessage?: string;
+  /** Archived state, as set via `POST /sessions/{sessionId}/chats/archive`. */
+  archived: boolean;
+  /** Pinned state, as set via `POST /sessions/{sessionId}/chats/pin`. */
+  pinned: boolean;
+  /**
+   * Muted state, as set via `POST /sessions/{sessionId}/chats/mute`. The verdict a caller needs to
+   * label a mute/unmute control: whatsapp-web.js derives `Chat.isMuted` itself, and Baileys compares
+   * a persisted `muteEndTime` (epoch milliseconds) against now. `muteExpiration` carries the instant.
+   */
+  muted: boolean;
+  /**
+   * Epoch MILLISECONDS at which the mute ends, present only when `muted` is true; `0` means muted
+   * indefinitely. Milliseconds is the same unit as `POST /sessions/{sessionId}/chats/mute`
+   * `muteUntil`, so a FINITE value can be written straight back (`mute-chat.dto.ts` documents that
+   * unit and why a seconds value is a trap). The `0` an indefinite mute reports is the exception:
+   * `muteUntil` requires a real future instant, so re-apply an indefinite mute with a far-future
+   * timestamp rather than `0`.
+   */
+  muteExpiration?: number;
 }
 
 /**
@@ -739,6 +784,25 @@ export interface EngineEventCallbacks {
    */
   onHistoryMessages?: (messages: IncomingMessage[]) => void;
   onDisconnected?: (reason: string) => void;
+  /**
+   * Fired each time the engine schedules an INTERNAL reconnect attempt: a drop it retries on its own
+   * and deliberately does NOT report through `onDisconnected`, because the session is still linked and
+   * the credentials are still good. Purely informational, so a consumer must not tear anything down on
+   * it; the engine keeps owning the retry.
+   *
+   * `attempt` is the 1-based number of the attempt being scheduled, and it resets once the connection
+   * is back, a QR is scanned or a QR window runs out (or after a long enough healthy stretch), so
+   * attempt 1 always opens a fresh episode. The close that ends an unscanned QR window is not a reconnect
+   * and is never reported; any other close while a QR waits is.
+   * `nextDelayMs` is how long the engine waits before making it. Together they are what a consumer
+   * needs to tell a one-second blip from a session that has been down for an hour, which the status
+   * alone cannot: the engine reports INITIALIZING for the whole episode, exactly as it does for a
+   * session that has never been paired.
+   *
+   * Optional: an engine that hands every drop to its consumer instead of retrying internally
+   * (whatsapp-web.js does) simply never invokes this, because that consumer already has the drop.
+   */
+  onReconnecting?: (attempt: number, nextDelayMs: number) => void;
   onStateChanged?: (state: EngineStatus) => void;
   /**
    * Fired when the engine needs an operator action to keep the session healthy — currently only the
@@ -790,9 +854,10 @@ export interface EngineEventCallbacks {
    *
    * Unlike the other callbacks, this one is NOT guarded on the engine still being live: a logout
    * that captured the engine registers its destructive promise even as a concurrent stop()/delete()
-   * evicts that engine, because the rm it ends in targets the session NAME's auth dir and would
-   * otherwise race a (re)created session under that same name. The lifecycle tracks the promise
-   * (keyed by the immutable captured session NAME) so start()/delete()/executeReconnect can wait
+   * evicts that engine, because the rm it ends in targets this session's auth dir and would
+   * otherwise race a (re)created session under that same name. The directory is keyed by the session
+   * id; the lifecycle tracks the promise under the immutable captured session NAME, which is unique
+   * per live row and so covers that directory, so start()/delete()/executeReconnect can wait
    * (bounded, fail-closed) for it to settle before touching that path.
    *
    * Adapters that never remove credentials on their own (e.g. Baileys until a later task wires its
